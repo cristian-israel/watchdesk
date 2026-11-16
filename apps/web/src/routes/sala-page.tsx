@@ -67,6 +67,41 @@ export function SalaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
 
+  // Firefox pausa/congela <video> com MediaStream ao perder foco; ao voltar precisa play().
+  useEffect(() => {
+    if (!active) return
+
+    function resumeVideos() {
+      for (const { video, tile } of tilesRef.current.values()) {
+        const stream = video.srcObject
+        if (!stream) continue
+        // Reatribuir o stream acorda o decoder do Firefox quando o frame fica preto.
+        video.srcObject = null
+        video.srcObject = stream
+        void video
+          .play()
+          .then(() => {
+            tile.classList.add('live')
+            setWaiting(false)
+          })
+          .catch(() => {
+            /* autoplay bloqueado — usuário precisa interagir */
+          })
+      }
+    }
+
+    function onVisibility() {
+      if (document.visibilityState === 'visible') resumeVideos()
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', resumeVideos)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', resumeVideos)
+    }
+  }, [active])
+
   async function boot() {
     setBooting(true)
     const meta = await api<{ exists: boolean; active?: boolean }>(`/api/rooms/${encodeURIComponent(room)}`)
@@ -112,6 +147,13 @@ export function SalaPage() {
     video.addEventListener('playing', () => {
       tile.classList.add('live')
       setWaiting(false)
+    })
+    // Firefox: ao voltar do background o elemento fica paused sem limpar o stream.
+    video.addEventListener('pause', () => {
+      if (document.visibilityState !== 'visible' || !video.srcObject) return
+      void video.play().catch(() => {
+        /* ok */
+      })
     })
     grid.appendChild(tile)
     entry = { name: `Tela ${slot + 1}`, video, stateEl, tile }
@@ -162,7 +204,11 @@ export function SalaPage() {
     peersRef.current.set(key, pc)
 
     pc.ontrack = (e) => {
-      tile.video.srcObject = e.streams[0] || new MediaStream([e.track])
+      const stream = e.streams[0] || new MediaStream([e.track])
+      tile.video.srcObject = stream
+      void tile.video.play().catch(() => {
+        /* autoplay — muted+playsinline cobrem o caso normal */
+      })
     }
     pc.onicecandidate = (ev) => {
       sendRef.current({
