@@ -29,7 +29,7 @@ fi
 destino="site/releases/$nome"
 rm -rf "$destino"
 mkdir -p "$destino"
-if ! docker cp "$id:/srv/." "$destino" || [ ! -f "$destino/index.html" ]; then
+if ! docker cp "$id:/opt/." "$destino" || [ ! -f "$destino/index.html" ]; then
   rm -rf "$destino"
   echo "A imagem não trouxe o site." >&2
   exit 1

@@ -80,7 +80,7 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/upstream.caddy:/etc/caddy/upstream.caddy:ro
-      - ./site:/srv:ro
+      - ./site:/opt:ro
     networks:
       default:
       edge:

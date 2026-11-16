@@ -20,4 +20,4 @@ RUN pnpm --filter @watchdesk/web build
 
 FROM busybox
 
-COPY --from=build /repo/apps/web/dist /srv
+COPY --from=build /repo/apps/web/dist /opt/

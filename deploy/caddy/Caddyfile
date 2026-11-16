@@ -6,7 +6,7 @@
 	}
 
 	handle {
-		root * /srv/atual
+		root * /opt/atual
 		try_files {path} /index.html
 		file_server
 	}

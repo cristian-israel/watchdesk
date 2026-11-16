@@ -7,7 +7,7 @@ Um VPS, um domínio por instalação. HTTP entra pelo Cloudflare Tunnel (`vps-pr
 ```text
 VPS
   vps-prod/                 ← túnel + rede Docker edge
-  {produto}/                ← /srv/watchdesk
+  {produto}/                ← /opt/watchdesk
       compose.yaml
       .env
       caddy/
@@ -69,7 +69,7 @@ Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `EDGE_ALIA
 ## Subida
 
 ```text
-cd /srv/watchdesk
+cd /opt/watchdesk
 sudo chmod +x scripts/*.sh
 sudo mkdir -p site/releases
 sudo docker compose pull
