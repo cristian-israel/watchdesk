@@ -1,6 +1,7 @@
 export type ChatMessage = {
   id: number
   authorName: string
+  authorDeviceId?: string
   role: 'host' | 'viewer'
   body: string
   createdAt: string

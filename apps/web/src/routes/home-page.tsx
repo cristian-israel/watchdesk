@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ROOM_RE } from '@/lib/room'
 import { Pagina } from '@/shell/pagina'
 
 export function HomePage() {
@@ -13,12 +14,12 @@ export function HomePage() {
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     const id = room.trim()
-    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(id)) return
+    if (!ROOM_RE.test(id)) return
     navigate(`/sala/${id}`)
   }
 
   return (
-    <Pagina titulo="Watchdesk" descricao="Assista uma sala. Seu nome fica neste aparelho.">
+    <Pagina titulo="Início" descricao="Assista uma sala. Seu nome fica neste aparelho.">
       <Card>
         <CardHeader>
           <CardTitle>Assistir</CardTitle>

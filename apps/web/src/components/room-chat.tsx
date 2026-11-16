@@ -27,6 +27,7 @@ type Props = {
   items: ChatFeedItem[]
   onSend: (body: string) => void
   selfName: string
+  selfDeviceId?: string
   disabled?: boolean
 }
 
@@ -62,7 +63,12 @@ function formatTime(iso: string) {
   }
 }
 
-function buildRuns(items: ChatFeedItem[], self: string): FeedRun[] {
+function isMine(message: ChatMessage, selfName: string, selfDeviceId?: string) {
+  if (selfDeviceId && message.authorDeviceId) return message.authorDeviceId === selfDeviceId
+  return message.authorName === selfName
+}
+
+function buildRuns(items: ChatFeedItem[], selfName: string, selfDeviceId?: string): FeedRun[] {
   const runs: FeedRun[] = []
   for (const item of items) {
     if (item.type === 'system') {
@@ -84,7 +90,7 @@ function buildRuns(items: ChatFeedItem[], self: string): FeedRun[] {
       key: item.id,
       authorName: m.authorName,
       role: m.role,
-      mine: m.authorName === self,
+      mine: isMine(m, selfName, selfDeviceId),
       messages: [m],
     })
   }
@@ -100,12 +106,12 @@ function entranceClass(side: 'start' | 'end' | 'center') {
   )
 }
 
-export function RoomChat({ items, onSend, selfName, disabled }: Props) {
+export function RoomChat({ items, onSend, selfName, selfDeviceId, disabled }: Props) {
   const [text, setText] = useState('')
   const [freshIds, setFreshIds] = useState<Set<string>>(() => new Set())
   const seenRef = useRef<Set<string>>(new Set())
   const self = selfName.trim()
-  const runs = buildRuns(items, self)
+  const runs = buildRuns(items, self, selfDeviceId)
 
   useEffect(() => {
     if (!items.length) {
@@ -193,7 +199,7 @@ export function RoomChat({ items, onSend, selfName, disabled }: Props) {
                                       {m.authorName}
                                       {m.role === 'host' ? (
                                         <span className="ml-1.5 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
-                                          host
+                                          Host
                                         </span>
                                       ) : null}
                                     </MessageHeader>

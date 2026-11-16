@@ -1,12 +1,14 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
+import { useActionDialog } from '@/actions/action-dialog'
 import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { api, type SessionInfo } from '@/lib/api'
+import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
 import {
   appendMessage,
   appendSystem,
@@ -15,13 +17,10 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
+import { KEY_MIN } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
-import {
-  SignalClient,
-  peerKey,
-  type RosterMember,
-  type SignalInbound,
-} from '@/lib/signal'
+import { useSignal } from '@/lib/use-signal'
+import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
 
 const MAX_SLOTS = 8
 
@@ -39,12 +38,10 @@ type PeerLink = {
 export function HostPage() {
   const { room = '' } = useParams()
   const navigate = useNavigate()
-  const { displayName: profileName, room: owned } = useProfile()
+  const action = useActionDialog()
+  const { displayName: profileName, deviceId, room: owned } = useProfile()
   const [displayName, setDisplayName] = useState('')
   const [hostKey, setHostKey] = useState('')
-  const [error, setError] = useState('')
-  const [info, setInfo] = useState('')
-  const [busy, setBusy] = useState(false)
   const [booting, setBooting] = useState(true)
   const [panel, setPanel] = useState(false)
   const [links, setLinks] = useState<string[]>([])
@@ -62,17 +59,24 @@ export function HostPage() {
   sharesRef.current = shares
   panelRef.current = panel
 
-  const signalRef = useRef<SignalClient | null>(null)
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
   const peersRef = useRef(new Map<string, PeerLink>())
-  const welcomedRef = useRef(false)
+  const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+
+  const { send } = useSignal(
+    panel,
+    (msg) => {
+      void onSignal(msg)
+    },
+    () => toast.error('Conexão perdida. Tentando de novo…'),
+  )
+  sendRef.current = (msg) => send(msg)
 
   useEffect(() => {
     void boot()
     return () => {
-      ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot))
-      signalRef.current?.close()
+      ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
       peersRef.current.forEach((p) => p.pc.close())
       peersRef.current.clear()
     }
@@ -87,7 +91,6 @@ export function HostPage() {
     setNewMax(data.maxViewers)
     panelRef.current = true
     setPanel(true)
-    openSignal()
   }
 
   async function boot() {
@@ -108,7 +111,7 @@ export function HostPage() {
         setBooting(false)
         return
       }
-      setError(host.message)
+      toast.error(host.message, { id: host.message })
     }
     setBooting(false)
   }
@@ -133,7 +136,7 @@ export function HostPage() {
     stream.getTracks().forEach((t) => pc.addTrack(t, stream))
 
     pc.onicecandidate = (ev) => {
-      signalRef.current?.send({
+      sendRef.current({
         type: 'ice',
         to: peerId,
         slot,
@@ -159,7 +162,7 @@ export function HostPage() {
 
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    signalRef.current?.send({ type: 'offer', to: peerId, slot, sdp: offer.sdp || '' })
+    sendRef.current({ type: 'offer', to: peerId, slot, sdp: offer.sdp || '' })
   }
 
   async function offerAllViewers(slot: number, stream: MediaStream) {
@@ -170,7 +173,6 @@ export function HostPage() {
 
   async function onSignal(msg: SignalInbound) {
     if (msg.type === 'welcome') {
-      welcomedRef.current = true
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setActive(msg.active)
       setMaxViewers(msg.maxViewers)
@@ -182,7 +184,7 @@ export function HostPage() {
       return
     }
     if (msg.type === 'error') {
-      setError(msg.message)
+      toast.error(msg.message, { id: msg.message })
       return
     }
     if (msg.type === 'viewer_joined') {
@@ -258,45 +260,24 @@ export function HostPage() {
     }
   }
 
-  function openSignal() {
-    signalRef.current?.close()
-    welcomedRef.current = false
-    const client = new SignalClient()
-    signalRef.current = client
-    client.onMessage = (msg) => {
-      void onSignal(msg)
-    }
-    client.onClose = () => {
-      if (panelRef.current && welcomedRef.current) {
-        setError('Conexão perdida. Tentando de novo…')
-        setTimeout(() => {
-          if (panelRef.current) openSignal()
-        }, 1500)
-      }
-    }
-    client.connect({ type: 'hello' })
-  }
-
   async function onEnter(e: FormEvent) {
     e.preventDefault()
-    setError('')
-    setBusy(true)
-    const res = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/host`, {
-      method: 'POST',
-      body: JSON.stringify({ hostKey }),
-    })
-    setBusy(false)
-    if (!res.ok) {
-      setError(res.message)
+    if (hostKey.length < 4) {
+      action.fail('Informe a chave do host.')
       return
     }
-    openFromSession(res.data)
+    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
+      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/host`, {
+        method: 'POST',
+        body: JSON.stringify({ hostKey }),
+      })
+      openFromSession(data)
+    })
   }
 
   async function shareScreen() {
-    setError('')
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      setError('Este endereço não permite compartilhar tela. Use localhost ou HTTPS.')
+      action.fail('Este endereço não permite compartilhar tela. Use localhost ou HTTPS.')
       return
     }
     try {
@@ -307,7 +288,7 @@ export function HostPage() {
       await publish(stream)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') return
-      setError(err instanceof Error ? err.message : 'Falha ao compartilhar.')
+      action.fail(err instanceof Error ? err.message : 'Falha ao compartilhar.')
     }
   }
 
@@ -319,7 +300,7 @@ export function HostPage() {
       if (sharesRef.current.has(slot)) continue
       const entry: ShareEntry = { stream, state: 'live' }
       setShares((prev) => new Map(prev).set(slot, entry))
-      signalRef.current?.send({ type: 'slot_add', slot })
+      sendRef.current({ type: 'slot_add', slot })
       track.addEventListener('ended', () => stopSlot(slot))
       await offerAllViewers(slot, stream)
       return
@@ -328,7 +309,7 @@ export function HostPage() {
     throw new Error('Limite de telas atingido.')
   }
 
-  function stopSlot(slot: number) {
+  function stopSlot(slot: number, notify = true) {
     const e = sharesRef.current.get(slot)
     if (!e) return
     setShares((prev) => {
@@ -336,7 +317,7 @@ export function HostPage() {
       next.delete(slot)
       return next
     })
-    signalRef.current?.send({ type: 'slot_remove', slot })
+    if (notify) sendRef.current({ type: 'slot_remove', slot })
     for (const key of [...peersRef.current.keys()]) {
       if (key.endsWith(`:${slot}`)) closePeer(key)
     }
@@ -344,66 +325,50 @@ export function HostPage() {
   }
 
   async function logout() {
-    ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot))
-    signalRef.current?.close()
+    ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
     await api('/api/logout', { method: 'POST' })
     setPanel(false)
-    navigate('/')
+    navigate('/salas')
   }
 
-  async function patchRoom(body: Record<string, unknown>) {
-    setError('')
-    setInfo('')
-    const res = await api<{ message?: string; links?: string[]; active?: boolean; maxViewers?: number }>(
-      `/api/rooms/${encodeURIComponent(room)}`,
-      { method: 'PATCH', body: JSON.stringify(body) },
-    )
-    if (!res.ok) {
-      setError(res.message)
-      return
-    }
-    if (res.data.links) setLinks(res.data.links)
-    if (typeof res.data.active === 'boolean') setActive(res.data.active)
-    if (typeof res.data.maxViewers === 'number') {
-      setMaxViewers(res.data.maxViewers)
-      setNewMax(res.data.maxViewers)
-    }
-    setInfo(res.data.message || 'Atualizado.')
-    setNewHostKey('')
-    setNewViewerKey('')
+  async function patchRoom(body: Record<string, unknown>, labels: { pending: string; success: string }) {
+    await action.run(labels, async () => {
+      const data = await apiOrThrow<{ message?: string; links?: string[]; active?: boolean; maxViewers?: number }>(
+        `/api/rooms/${encodeURIComponent(room)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      )
+      if (data.links) setLinks(data.links)
+      if (typeof data.active === 'boolean') setActive(data.active)
+      if (typeof data.maxViewers === 'number') {
+        setMaxViewers(data.maxViewers)
+        setNewMax(data.maxViewers)
+      }
+      setNewHostKey('')
+      setNewViewerKey('')
+    })
   }
 
   async function kickAllViewers() {
-    setError('')
-    setInfo('')
-    const res = await api<{ message?: string }>(`/api/rooms/${encodeURIComponent(room)}/kick-viewers`, {
-      method: 'POST',
+    await action.run({ pending: 'Removendo…', success: 'Espectadores removidos' }, async () => {
+      await apiOrThrow(`/api/rooms/${encodeURIComponent(room)}/kick-viewers`, { method: 'POST' })
+      for (const key of [...peersRef.current.keys()]) closePeer(key)
+      viewersRef.current.clear()
+      setRoster((prev) => prev.filter((m) => m.role !== 'viewer'))
     })
-    if (!res.ok) {
-      setError(res.message)
-      return
-    }
-    for (const key of [...peersRef.current.keys()]) closePeer(key)
-    viewersRef.current.clear()
-    setRoster((prev) => prev.filter((m) => m.role !== 'viewer'))
-    setInfo(res.data.message || 'Espectadores removidos.')
   }
 
-  async function copy(url: string, btn: HTMLButtonElement) {
+  async function copy(url: string) {
     try {
       await navigator.clipboard.writeText(url)
-      btn.textContent = 'Copiado'
+      toast.success('Link copiado')
     } catch {
-      btn.textContent = 'Selecione'
+      toast.error('Não foi possível copiar o link')
     }
-    setTimeout(() => {
-      btn.textContent = 'Copiar'
-    }, 1500)
   }
 
   if (booting) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 text-sm text-muted-foreground sm:pb-0">
+      <div className="flex h-full min-h-0 items-center justify-center p-4 text-sm text-muted-foreground">
         Carregando…
       </div>
     )
@@ -431,14 +396,9 @@ export function HostPage() {
                   autoFocus
                 />
               </div>
-              <Button type="submit" disabled={busy} className="w-full">
+              <Button type="submit" disabled={action.busy} className="w-full">
                 Entrar
               </Button>
-              {error ? (
-                <p className="text-sm text-destructive" role="alert">
-                  {error}
-                </p>
-              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -455,7 +415,8 @@ export function HostPage() {
         <RoomChat
           items={chatFeed}
           selfName={profileName || displayName}
-          onSend={(body) => signalRef.current?.send({ type: 'chat', body })}
+          selfDeviceId={deviceId}
+          onSend={(body) => sendRef.current({ type: 'chat', body })}
         />
       }
     >
@@ -536,7 +497,7 @@ export function HostPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={(ev) => void copy(url, ev.currentTarget)}
+                    onClick={() => void copy(url)}
                   >
                     Copiar
                   </Button>
@@ -552,7 +513,15 @@ export function HostPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void patchRoom({ active: !active })}
+                onClick={() =>
+                  void patchRoom(
+                    { active: !active },
+                    {
+                      pending: active ? 'Desativando…' : 'Reativando…',
+                      success: active ? 'Sala desativada' : 'Sala reativada',
+                    },
+                  )
+                }
               >
                 {active ? 'Desativar sala' : 'Reativar sala'}
               </Button>
@@ -561,7 +530,10 @@ export function HostPage() {
               className="flex flex-wrap items-end gap-2"
               onSubmit={(e) => {
                 e.preventDefault()
-                void patchRoom({ maxViewers: newMax })
+                void patchRoom(
+                  { maxViewers: newMax },
+                  { pending: 'Salvando…', success: 'Limite atualizado' },
+                )
               }}
             >
               <div className="space-y-1">
@@ -590,8 +562,11 @@ export function HostPage() {
               className="flex flex-col gap-2"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (!newHostKey) return
-                void patchRoom({ hostKey: newHostKey })
+                if (newHostKey.length < KEY_MIN) {
+                  action.fail('A nova chave precisa ter no mínimo 8 caracteres.')
+                  return
+                }
+                void patchRoom({ hostKey: newHostKey }, { pending: 'Trocando chave…', success: 'Chave do host atualizada' })
               }}
             >
               <Label htmlFor="newHost">Nova chave do host</Label>
@@ -601,10 +576,10 @@ export function HostPage() {
                   type="password"
                   value={newHostKey}
                   onChange={(e) => setNewHostKey(e.target.value)}
-                  minLength={4}
+                  minLength={KEY_MIN}
                   placeholder="deixe vazio para não alterar"
                 />
-                <Button type="submit" size="sm" variant="outline" disabled={newHostKey.length < 4}>
+                <Button type="submit" size="sm" variant="outline" disabled={newHostKey.length < KEY_MIN}>
                   Trocar
                 </Button>
               </div>
@@ -613,8 +588,14 @@ export function HostPage() {
               className="flex flex-col gap-2"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (!newViewerKey) return
-                void patchRoom({ viewerKey: newViewerKey })
+                if (newViewerKey.length < KEY_MIN) {
+                  action.fail('A nova chave precisa ter no mínimo 8 caracteres.')
+                  return
+                }
+                void patchRoom(
+                  { viewerKey: newViewerKey },
+                  { pending: 'Trocando chave…', success: 'Chave dos espectadores atualizada' },
+                )
               }}
             >
               <Label htmlFor="newViewer">Nova chave dos espectadores</Label>
@@ -624,21 +605,15 @@ export function HostPage() {
                   type="password"
                   value={newViewerKey}
                   onChange={(e) => setNewViewerKey(e.target.value)}
-                  minLength={4}
+                  minLength={KEY_MIN}
                 />
-                <Button type="submit" size="sm" variant="outline" disabled={newViewerKey.length < 4}>
+                <Button type="submit" size="sm" variant="outline" disabled={newViewerKey.length < KEY_MIN}>
                   Trocar
                 </Button>
               </div>
             </form>
           </section>
 
-          {info ? <p className="text-sm text-muted-foreground">{info}</p> : null}
-          {error ? (
-            <p className="text-sm text-destructive" role="alert">
-              {error}
-            </p>
-          ) : null}
         </div>
       </div>
     </ChatSplit>

@@ -1,12 +1,13 @@
 {
-  "name": "@sala/api",
+  "name": "@watchdesk/api",
   "private": true,
   "version": "0.1.0",
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
     "dev": "node --watch src/index.js --port 7030",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
     "dotenv": "^18.0.9",

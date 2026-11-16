@@ -1,85 +1,83 @@
 import { FormEvent, useState } from 'react'
+import { toast } from 'sonner'
 import { useNavigate } from 'react-router'
+import { useActionDialog } from '@/actions/action-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { api, type SessionInfo } from '@/lib/api'
+import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
+import { KEY_MIN, ROOM_RE } from '@/lib/room'
 import { Pagina } from '@/shell/pagina'
 import { useProfile } from '@/shell/profile'
 
 export function SalasPage() {
   const navigate = useNavigate()
+  const action = useActionDialog()
   const { room, refresh } = useProfile()
   const [slug, setSlug] = useState('')
   const [hostKey, setHostKey] = useState('')
   const [viewerKey, setViewerKey] = useState('')
   const [maxViewers, setMaxViewers] = useState(8)
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
 
   async function onCreate(e: FormEvent) {
     e.preventDefault()
-    setError('')
-    setBusy(true)
-    const res = await api('/api/rooms', {
-      method: 'POST',
-      body: JSON.stringify({
-        slug: slug.trim(),
-        hostKey,
-        viewerKey,
-        maxViewers,
-      }),
-    })
-    setBusy(false)
-    if (!res.ok) {
-      setError(res.message)
+    const name = slug.trim()
+    if (!ROOM_RE.test(name)) {
+      action.fail('Nome de sala inválido.')
       return
     }
-    setSlug('')
-    setHostKey('')
-    setViewerKey('')
-    await refresh()
+    if (hostKey.length < KEY_MIN || viewerKey.length < KEY_MIN) {
+      action.fail('As chaves precisam ter no mínimo 8 caracteres.')
+      return
+    }
+    await action.run({ pending: 'Criando sala…', success: 'Sala criada' }, async () => {
+      await apiOrThrow('/api/rooms', {
+        method: 'POST',
+        body: JSON.stringify({
+          slug: name,
+          hostKey,
+          viewerKey,
+          maxViewers,
+        }),
+      })
+      setSlug('')
+      setHostKey('')
+      setViewerKey('')
+      await refresh()
+    })
   }
 
   async function transmitir() {
     if (!room) return
-    setError('')
-    setBusy(true)
-    const res = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room.slug)}/host`, {
-      method: 'POST',
-      body: JSON.stringify({}),
+    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
+      const session = await api<SessionInfo>('/api/session')
+      const alreadyHost = session.ok && session.data.role === 'host' && session.data.room === room.slug
+      if (!alreadyHost) {
+        await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room.slug)}/host`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        })
+      }
+      navigate(`/salas/${encodeURIComponent(room.slug)}`)
     })
-    setBusy(false)
-    if (!res.ok) {
-      setError(res.message)
-      return
-    }
-    navigate(`/host/${encodeURIComponent(room.slug)}`)
   }
 
   async function excluir() {
     if (!room) return
     if (!window.confirm(`Excluir a sala ${room.slug}? Quem estiver nela sai na hora.`)) return
-    setError('')
-    setBusy(true)
-    const res = await api('/api/me/room', { method: 'DELETE' })
-    setBusy(false)
-    if (!res.ok) {
-      setError(res.message)
-      return
-    }
-    await refresh()
+    await action.run({ pending: 'Excluindo…', success: 'Sala excluída' }, async () => {
+      await apiOrThrow('/api/me/room', { method: 'DELETE' })
+      await refresh()
+    })
   }
 
   async function copiar(url: string) {
     try {
       await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      toast.success('Link copiado')
     } catch {
-      setCopied(false)
+      toast.error('Não foi possível copiar o link')
     }
   }
 
@@ -100,29 +98,24 @@ export function SalasPage() {
               <div className="flex gap-2">
                 <Input id="convite" value={convite} readOnly />
                 <Button type="button" variant="outline" onClick={() => void copiar(convite)}>
-                  {copied ? 'Copiado' : 'Copiar'}
+                  Copiar
                 </Button>
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button type="button" disabled={busy} onClick={() => void transmitir()} className="sm:flex-1">
+              <Button type="button" disabled={action.busy} onClick={() => void transmitir()} className="sm:flex-1">
                 Transmitir
               </Button>
               <Button
                 type="button"
                 variant="destructive"
-                disabled={busy}
+                disabled={action.busy}
                 onClick={() => void excluir()}
                 className="sm:flex-1"
               >
                 Excluir
               </Button>
             </div>
-            {error ? (
-              <p className="text-sm text-destructive" role="alert">
-                {error}
-              </p>
-            ) : null}
           </CardContent>
         </Card>
       </Pagina>
@@ -156,7 +149,7 @@ export function SalasPage() {
                 type="password"
                 value={hostKey}
                 onChange={(e) => setHostKey(e.target.value)}
-                minLength={4}
+                minLength={KEY_MIN}
                 required
               />
             </div>
@@ -167,7 +160,7 @@ export function SalasPage() {
                 type="password"
                 value={viewerKey}
                 onChange={(e) => setViewerKey(e.target.value)}
-                minLength={4}
+                minLength={KEY_MIN}
                 required
               />
             </div>
@@ -183,14 +176,9 @@ export function SalasPage() {
                 required
               />
             </div>
-            <Button type="submit" disabled={busy} className="w-full">
+            <Button type="submit" disabled={action.busy} className="w-full">
               Criar sala
             </Button>
-            {error ? (
-              <p className="text-sm text-destructive" role="alert">
-                {error}
-              </p>
-            ) : null}
           </form>
         </CardContent>
       </Card>

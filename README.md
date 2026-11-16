@@ -13,7 +13,7 @@ pnpm dev                      # API :7030 + Vite :7130
 
 - Salas: http://localhost:7130/salas  
 - Assistir: http://localhost:7130/sala/casa  
-- Transmitir: http://localhost:7130/host/casa  
+- Transmitir: http://localhost:7130/salas/casa  
 
 O `.env` na raiz do repo é lido pela API (via `dotenv`), como no Keeptime. Migrations rodam no boot da API.
 

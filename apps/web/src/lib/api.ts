@@ -35,6 +35,12 @@ export async function api<T = unknown>(
   }
 }
 
+export async function apiOrThrow<T = unknown>(path: string, init: RequestInit = {}) {
+  const res = await api<T>(path, init)
+  if (!res.ok) throw new Error(res.message)
+  return res.data
+}
+
 export type DeviceRoom = {
   slug: string
   active: boolean
@@ -43,6 +49,7 @@ export type DeviceRoom = {
 }
 
 export type Me = {
+  deviceId: string
   displayName: string
   room: DeviceRoom | null
 }

@@ -12,6 +12,24 @@ const crypto = require('crypto');
 const os = require('os');
 const { WebSocketServer } = require('ws');
 const { initDb, getPool, healthCheck } = require('./db');
+const {
+  ROOM_RE,
+  KEY_MIN_CREATE,
+  KEY_MIN_LOGIN,
+  WS_MAX_PAYLOAD,
+  shaHex,
+  hashEqHex,
+  normalizeName,
+  validateKey,
+  isDeviceId,
+  clientIp,
+  parseCookies,
+  cookieHeader,
+  createRateLimiter,
+  iceServers: buildIceServers,
+  originAllowed,
+  readJson,
+} = require('./util');
 
 const HELP = `
 Uso: node src/index.js [opções]
@@ -59,16 +77,12 @@ const cfg = {
   turnRealm: args['turn-realm'] || process.env.TURN_REALM || 'watchdesk',
 };
 
-const ROOM_RE = /^[a-zA-Z0-9_-]{1,40}$/;
-const NAME_RE = /^.{1,80}$/;
 const MAX_SLOTS = 8;
 const ICE_TTL_SEC = 3600;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEVICE_TTL_SEC = 365 * 24 * 60 * 60;
 const CHAT_HISTORY = 100;
 const CHAT_MAX = 500;
-
-const shaHex = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 /** Runtime presence by slug */
 /** @type {Map<string, RuntimeRoom>} */
@@ -96,15 +110,6 @@ const live = new Map();
  * }} Client
  */
 
-function hashEqHex(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
-  } catch {
-    return false;
-  }
-}
-
 function ensureLive(row) {
   let r = live.get(row.slug);
   if (!r) {
@@ -126,16 +131,7 @@ function ensureLive(row) {
   return r;
 }
 
-const failures = new Map();
-function blocked(ip) {
-  const now = Date.now();
-  const list = (failures.get(ip) || []).filter((t) => now - t < 60_000);
-  failures.set(ip, list);
-  return list.length >= 8;
-}
-function noteFailure(ip) {
-  (failures.get(ip) || failures.set(ip, []).get(ip)).push(Date.now());
-}
+const { blocked, noteFailure } = createRateLimiter();
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, {
@@ -149,53 +145,6 @@ function send(res, status, body, headers = {}) {
 
 function sendJson(res, status, obj, extraHeaders = {}) {
   send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json', ...extraHeaders });
-}
-
-function readJson(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      try {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-function parseCookies(req) {
-  const raw = req.headers.cookie || '';
-  /** @type {Record<string, string>} */
-  const out = {};
-  for (const part of raw.split(';')) {
-    const i = part.indexOf('=');
-    if (i < 0) continue;
-    const k = part.slice(0, i).trim();
-    const v = part.slice(i + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
-  }
-  return out;
-}
-
-function isSecureReq(req) {
-  const xf = String(req.headers['x-forwarded-proto'] || '');
-  return xf.split(',')[0].trim() === 'https';
-}
-
-function cookieHeader(name, value, maxAge, req) {
-  const parts = [
-    `${name}=${encodeURIComponent(value)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${maxAge}`,
-  ];
-  if (isSecureReq(req)) parts.push('Secure');
-  return parts.join('; ');
 }
 
 function appendSetCookie(res, cookie) {
@@ -235,40 +184,17 @@ function viewerLinks(slug) {
   });
 }
 
-function turnUsername(userId) {
-  const expiry = Math.floor(Date.now() / 1000) + ICE_TTL_SEC;
-  return `${expiry}:${userId}`;
-}
-
-function turnCredential(username) {
-  return crypto.createHmac('sha1', cfg.turnSecret).update(username).digest('base64');
-}
-
 function iceServers(userId = 'anon') {
-  /** @type {Array<{ urls: string | string[], username?: string, credential?: string }>} */
-  const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
-  const host = cfg.turnHost || cfg.publicHost;
-  if (cfg.turnSecret && host) {
-    const username = turnUsername(userId);
-    const credential = turnCredential(username);
-    const base = `${host}:${cfg.turnPort}`;
-    servers.push({
-      urls: [`turn:${base}?transport=udp`, `turn:${base}?transport=tcp`],
-      username,
-      credential,
-    });
-  }
-  return servers;
-}
-
-function normalizeName(name) {
-  const n = String(name || '').trim();
-  if (!NAME_RE.test(n)) return null;
-  return n;
-}
-
-function validateKey(key) {
-  return typeof key === 'string' && key.length >= 4 && key.length <= 128;
+  return buildIceServers(
+    {
+      turnSecret: cfg.turnSecret,
+      turnHost: cfg.turnHost,
+      publicHost: cfg.publicHost,
+      turnPort: cfg.turnPort,
+    },
+    userId,
+    ICE_TTL_SEC,
+  );
 }
 
 // ----------------------------------------------------------------- DB helpers
@@ -276,16 +202,6 @@ function validateKey(key) {
 async function findRoomBySlug(slug) {
   const [rows] = await getPool().query('SELECT * FROM rooms WHERE slug = ? LIMIT 1', [slug]);
   return rows[0] || null;
-}
-
-function clientIp(req) {
-  const xf = String(req.headers['x-forwarded-for'] || '');
-  const fromHeader = xf.split(',')[0].trim();
-  return (fromHeader || req.socket.remoteAddress || '').slice(0, 64);
-}
-
-function isDeviceId(id) {
-  return typeof id === 'string' && /^[a-f0-9]{64}$/.test(id);
 }
 
 async function findRoomByDevice(deviceId) {
@@ -304,6 +220,7 @@ function roomSummary(row) {
 
 function mePayload(device, room) {
   return {
+    deviceId: device.id,
     displayName: device.display_name || '',
     room: room ? roomSummary(room) : null,
   };
@@ -374,6 +291,13 @@ function dropLiveRoom(slug, message) {
 }
 
 async function createSession(roomId, role, displayName, deviceId) {
+  if (deviceId) {
+    await getPool().query('DELETE FROM sessions WHERE room_id = ? AND role = ? AND device_id = ?', [
+      roomId,
+      role,
+      deviceId,
+    ]);
+  }
   const id = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + SESSION_TTL_MS);
   await getPool().query(
@@ -413,29 +337,35 @@ async function deleteSessionsByRole(roomId, role, exceptId = null) {
   }
 }
 
-async function loadChat(roomId) {
-  const [rows] = await getPool().query(
-    `SELECT id, author_name AS authorName, role, body, created_at AS createdAt
-     FROM chat_messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`,
-    [roomId, CHAT_HISTORY],
-  );
-  return rows.reverse().map((r) => ({
+function mapChatRow(r) {
+  return {
     id: r.id,
     authorName: r.authorName,
+    authorDeviceId: r.authorDeviceId || '',
     role: r.role,
     body: r.body,
     createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
-  }));
+  };
 }
 
-async function insertChat(roomId, authorName, role, body) {
+async function loadChat(roomId) {
+  const [rows] = await getPool().query(
+    `SELECT id, author_name AS authorName, device_id AS authorDeviceId, role, body, created_at AS createdAt
+     FROM chat_messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`,
+    [roomId, CHAT_HISTORY],
+  );
+  return rows.reverse().map(mapChatRow);
+}
+
+async function insertChat(roomId, authorName, role, body, deviceId) {
   const [result] = await getPool().query(
-    'INSERT INTO chat_messages (room_id, author_name, role, body) VALUES (?, ?, ?, ?)',
-    [roomId, authorName, role, body],
+    'INSERT INTO chat_messages (room_id, author_name, role, body, device_id) VALUES (?, ?, ?, ?, ?)',
+    [roomId, authorName, role, body, deviceId || null],
   );
   return {
     id: result.insertId,
     authorName,
+    authorDeviceId: deviceId || '',
     role,
     body,
     createdAt: new Date().toISOString(),
@@ -511,16 +441,9 @@ function detachClient(client) {
   }
 }
 
-async function handleHello(ws, msg, req, ip) {
+async function handleHello(ws, req, ip) {
   const cookies = parseCookies(req);
-  let session = await getSession(cookies.wd_session);
-
-  // Optional override: login fields if no valid session
-  if (!session && msg.room && msg.role && msg.key) {
-    wsSend(ws, { type: 'error', message: 'Faça login pela página antes de conectar.' });
-    ws.close();
-    return;
-  }
+  const session = await getSession(cookies.wd_session);
 
   if (!session) {
     noteFailure(ip);
@@ -636,7 +559,13 @@ function handleSignal(client, msg) {
       const body = String(msg.body || '').trim().slice(0, CHAT_MAX);
       if (!body) return;
       try {
-        const saved = await insertChat(room.roomDbId, client.displayName, client.role, body);
+        const saved = await insertChat(
+          room.roomDbId,
+          client.displayName,
+          client.role,
+          body,
+          client.deviceId,
+        );
         broadcastRoom(room, { type: 'chat', message: saved });
       } catch (e) {
         console.error('chat', e);
@@ -704,11 +633,15 @@ function kickRole(room, role, reason) {
 }
 
 function attachWs(server) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD });
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url || '/', 'http://x');
     if (url.pathname !== '/api/ws') {
+      socket.destroy();
+      return;
+    }
+    if (!originAllowed(req, cfg.publicHost)) {
       socket.destroy();
       return;
     }
@@ -718,7 +651,7 @@ function attachWs(server) {
   });
 
   wss.on('connection', (ws, req) => {
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req) || '?';
     if (blocked(ip)) {
       wsSend(ws, { type: 'error', message: 'Muitas tentativas. Aguarde 1 minuto.' });
       ws.close();
@@ -736,7 +669,7 @@ function attachWs(server) {
 
       if (msg.type === 'hello') {
         if (ws.watchdeskClient) return;
-        void handleHello(ws, msg, req, ip);
+        void handleHello(ws, req, ip);
         return;
       }
 
@@ -755,7 +688,7 @@ function attachWs(server) {
 // ----------------------------------------------------------------- HTTP
 
 const handler = async (req, res) => {
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req) || '?';
   const url = new URL(req.url || '/', 'http://x');
   const { pathname } = url;
 
@@ -844,8 +777,12 @@ const handler = async (req, res) => {
 
       if (!ROOM_RE.test(slug)) return send(res, 400, 'Nome de sala inválido.');
       if (!displayName) return send(res, 400, 'Informe seu nome.');
-      if (!validateKey(hostKey)) return send(res, 400, 'Chave do host inválida (mín. 4).');
-      if (!validateKey(viewerKey)) return send(res, 400, 'Chave dos espectadores inválida (mín. 4).');
+      if (!validateKey(hostKey, KEY_MIN_CREATE)) {
+        return send(res, 400, 'Chave do host inválida (mín. 8).');
+      }
+      if (!validateKey(viewerKey, KEY_MIN_CREATE)) {
+        return send(res, 400, 'Chave dos espectadores inválida (mín. 8).');
+      }
 
       const owned = await findRoomByDevice(device.id);
       if (owned) return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
@@ -908,7 +845,7 @@ const handler = async (req, res) => {
       if (!row) return send(res, 404, 'Sala não encontrada.');
       const owner = Boolean(row.device_id) && row.device_id === device.id;
       if (!owner) {
-        if (!validateKey(hostKey)) return send(res, 400, 'Chave do host inválida.');
+        if (!validateKey(hostKey, KEY_MIN_LOGIN)) return send(res, 400, 'Chave do host inválida.');
         if (!hashEqHex(row.host_key_hash, shaHex(hostKey))) {
           noteFailure(ip);
           return send(res, 401, 'Chave do host incorreta.');
@@ -938,7 +875,7 @@ const handler = async (req, res) => {
       const displayName = device.display_name || '';
       const viewerKey = body.viewerKey || '';
       if (!displayName) return send(res, 400, 'Informe seu nome.');
-      if (!validateKey(viewerKey)) return send(res, 400, 'Chave inválida.');
+      if (!validateKey(viewerKey, KEY_MIN_LOGIN)) return send(res, 400, 'Chave inválida.');
 
       const row = await findRoomBySlug(slug);
       if (!row) return send(res, 404, 'Sala não encontrada.');
@@ -1020,13 +957,15 @@ const handler = async (req, res) => {
         params.push(mv);
       }
       if (body.hostKey !== undefined && body.hostKey !== '') {
-        if (!validateKey(body.hostKey)) return send(res, 400, 'Nova chave do host inválida.');
+        if (!validateKey(body.hostKey, KEY_MIN_CREATE)) return send(res, 400, 'Nova chave do host inválida.');
         updates.push('host_key_hash = ?');
         params.push(shaHex(body.hostKey));
         hostKeyChanged = true;
       }
       if (body.viewerKey !== undefined && body.viewerKey !== '') {
-        if (!validateKey(body.viewerKey)) return send(res, 400, 'Nova chave dos espectadores inválida.');
+        if (!validateKey(body.viewerKey, KEY_MIN_CREATE)) {
+          return send(res, 400, 'Nova chave dos espectadores inválida.');
+        }
         updates.push('viewer_key_hash = ?');
         params.push(shaHex(body.viewerKey));
         viewerKeyChanged = true;
@@ -1076,8 +1015,7 @@ const handler = async (req, res) => {
     }
   }
 
-  // GET /api/ice (session-based)
-  if (pathname === '/api/ice') {
+  if (req.method === 'GET' && pathname === '/api/ice') {
     const cookies = parseCookies(req);
     const session = await getSession(cookies.wd_session);
     if (!session) return send(res, 401, 'Sessão inválida');

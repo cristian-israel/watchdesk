@@ -1,12 +1,14 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { useParams } from 'react-router'
+import { useActionDialog } from '@/actions/action-dialog'
 import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { api, type SessionInfo } from '@/lib/api'
+import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
 import {
   appendMessage,
   appendSystem,
@@ -16,7 +18,9 @@ import {
   type ChatFeedItem,
 } from '@/lib/chat-feed'
 import { useProfile } from '@/shell/profile'
-import { SignalClient, peerKey, type SignalInbound } from '@/lib/signal'
+import { useImmersive } from '@/shell/shell-mode'
+import { useSignal } from '@/lib/use-signal'
+import { peerKey, type SignalInbound, type SignalOutbound } from '@/lib/signal'
 
 type TileEntry = {
   name: string
@@ -27,44 +31,47 @@ type TileEntry = {
 
 export function SalaPage() {
   const { room = '' } = useParams()
-  const { displayName: profileName } = useProfile()
+  const action = useActionDialog()
+  const { displayName: profileName, deviceId } = useProfile()
   const [displayName, setDisplayName] = useState('')
   const [key, setKey] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [missing, setMissing] = useState('')
   const [booting, setBooting] = useState(true)
   const [active, setActive] = useState(false)
   const [waiting, setWaiting] = useState(true)
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
 
-  const signalRef = useRef<SignalClient | null>(null)
+  useImmersive(active)
+
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const peersRef = useRef(new Map<string, RTCPeerConnection>())
   const tilesRef = useRef(new Map<number, TileEntry>())
   const gridRef = useRef<HTMLDivElement>(null)
-  const welcomedRef = useRef(false)
-  const activeRef = useRef(false)
+  const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+
+  const { send } = useSignal(
+    active,
+    (msg) => {
+      void onSignal(msg)
+    },
+    () => toast.error('Conexão perdida. Tentando de novo…'),
+  )
+  sendRef.current = (msg) => send(msg)
 
   useEffect(() => {
-    const m = location.hash.match(/[#&]k=([^&]*)/)
-    const fromLink = m ? decodeURIComponent(m[1]) : ''
-    if (fromLink) {
-      history.replaceState(null, '', location.pathname)
-      setKey(fromLink)
-    }
-    void boot(fromLink)
+    void boot()
     return () => {
-      void leave(false)
+      teardown()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
 
-  async function boot(prefillKey = '') {
+  async function boot() {
     setBooting(true)
     const meta = await api<{ exists: boolean; active?: boolean }>(`/api/rooms/${encodeURIComponent(room)}`)
     if (!meta.ok || meta.data.exists === false) {
-      setError('Sala não encontrada.')
+      setMissing('Sala não encontrada.')
       setBooting(false)
       return
     }
@@ -76,10 +83,6 @@ export function SalaPage() {
     if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
       setDisplayName(res.data.displayName)
       setActive(true)
-      activeRef.current = true
-      openSignal()
-    } else if (prefillKey) {
-      setKey(prefillKey)
     }
     setBooting(false)
   }
@@ -162,7 +165,7 @@ export function SalaPage() {
       tile.video.srcObject = e.streams[0] || new MediaStream([e.track])
     }
     pc.onicecandidate = (ev) => {
-      signalRef.current?.send({
+      sendRef.current({
         type: 'ice',
         to: from,
         slot,
@@ -180,34 +183,31 @@ export function SalaPage() {
     await pc.setRemoteDescription({ type: 'offer', sdp })
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    signalRef.current?.send({ type: 'answer', to: from, slot, sdp: answer.sdp || '' })
+    sendRef.current({ type: 'answer', to: from, slot, sdp: answer.sdp || '' })
   }
 
   async function onSignal(msg: SignalInbound) {
     if (msg.type === 'welcome') {
-      welcomedRef.current = true
-      setError('')
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
       syncSlots(msg.slots || [])
       return
     }
     if (msg.type === 'error') {
-      setError(msg.message)
-      welcomedRef.current = false
+      toast.error(msg.message, { id: msg.message })
       if (
         msg.message.includes('Sessão') ||
         msg.message.includes('Chave') ||
         msg.message.includes('desativada') ||
         msg.message.includes('cheia')
       ) {
-        leave()
+        void leave()
       }
       return
     }
     if (msg.type === 'auth_changed') {
-      setError(msg.message)
-      leave()
+      toast.error(msg.message, { id: msg.message })
+      void leave()
       return
     }
     if (msg.type === 'slots') {
@@ -273,56 +273,29 @@ export function SalaPage() {
     if (msg.type === 'room_updated') {
       setRoomActive(msg.active)
       if (!msg.active) {
-        setError('Sala desativada pelo host.')
-        leave()
+        toast.error('Sala desativada pelo host.')
+        void leave()
       }
     }
-  }
-
-  function openSignal() {
-    signalRef.current?.close()
-    welcomedRef.current = false
-    const client = new SignalClient()
-    signalRef.current = client
-    client.onMessage = (msg) => {
-      void onSignal(msg)
-    }
-    client.onClose = () => {
-      if (activeRef.current && welcomedRef.current) {
-        setError('Conexão perdida. Tentando de novo…')
-        setTimeout(() => {
-          if (activeRef.current) openSignal()
-        }, 1500)
-      }
-    }
-    client.connect({ type: 'hello' })
   }
 
   async function enter(e?: FormEvent) {
     e?.preventDefault()
-    setError('')
-    setBusy(true)
-    const res = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
-      method: 'POST',
-      body: JSON.stringify({ viewerKey: key }),
-    })
-    setBusy(false)
-    if (!res.ok) {
-      setError(res.message)
+    if (!key) {
+      action.fail('Informe a chave.')
       return
     }
-    setDisplayName(res.data.displayName)
-    setActive(true)
-    activeRef.current = true
-    openSignal()
+    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
+      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
+        method: 'POST',
+        body: JSON.stringify({ viewerKey: key }),
+      })
+      setDisplayName(data.displayName)
+      setActive(true)
+    })
   }
 
-  async function leave(clearSession = true) {
-    activeRef.current = false
-    welcomedRef.current = false
-    setActive(false)
-    signalRef.current?.close()
-    signalRef.current = null
+  function teardown() {
     peersRef.current.forEach((pc) => pc.close())
     peersRef.current.clear()
     tilesRef.current.forEach((t) => t.tile.remove())
@@ -330,15 +303,18 @@ export function SalaPage() {
     gridRef.current?.replaceChildren()
     setChatFeed([])
     setWaiting(true)
-    if (clearSession) {
-      await api('/api/logout', { method: 'POST' })
-      setKey('')
-    }
+  }
+
+  async function leave() {
+    teardown()
+    setActive(false)
+    await api('/api/logout', { method: 'POST' })
+    setKey('')
   }
 
   if (booting) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 text-sm text-muted-foreground sm:pb-0">
+      <div className="flex h-full min-h-0 items-center justify-center p-4 text-sm text-muted-foreground">
         Carregando…
       </div>
     )
@@ -351,13 +327,15 @@ export function SalaPage() {
           <CardHeader>
             <CardTitle>Sala {room}</CardTitle>
             <CardDescription>
-              {!roomActive
-                ? 'Esta sala está desativada no momento.'
-                : 'Informe a chave dos espectadores.'}
+              {missing
+                ? missing
+                : !roomActive
+                  ? 'Esta sala está desativada no momento.'
+                  : 'Informe a chave dos espectadores.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {roomActive ? (
+            {roomActive && !missing ? (
               <form className="flex flex-col gap-3" onSubmit={(e) => void enter(e)} autoComplete="off">
                 <div className="space-y-2">
                   <Label htmlFor="key">Chave</Label>
@@ -370,22 +348,11 @@ export function SalaPage() {
                     autoFocus
                   />
                 </div>
-                <Button type="submit" disabled={busy} className="w-full">
+                <Button type="submit" disabled={action.busy} className="w-full">
                   Entrar
                 </Button>
-                {error ? (
-                  <p className="text-sm text-destructive" role="alert">
-                    {error}
-                  </p>
-                ) : null}
               </form>
-            ) : (
-              error ? (
-                <p className="text-sm text-destructive" role="alert">
-                  {error}
-                </p>
-              ) : null
-            )}
+            ) : null}
           </CardContent>
         </Card>
       </div>
@@ -398,7 +365,8 @@ export function SalaPage() {
         <RoomChat
           items={chatFeed}
           selfName={profileName || displayName}
-          onSend={(body) => signalRef.current?.send({ type: 'chat', body })}
+          selfDeviceId={deviceId}
+          onSend={(body) => sendRef.current({ type: 'chat', body })}
         />
       }
     >
@@ -415,11 +383,6 @@ export function SalaPage() {
         />
         {waiting ? (
           <p className="px-4 pb-4 text-sm text-muted-foreground">Aguardando o host transmitir…</p>
-        ) : null}
-        {error ? (
-          <p className="px-4 pb-4 text-sm text-destructive" role="alert">
-            {error}
-          </p>
         ) : null}
         <style>{`.tile.live .state{display:none}`}</style>
       </div>

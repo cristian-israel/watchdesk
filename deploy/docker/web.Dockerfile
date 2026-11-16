@@ -16,7 +16,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY apps/web ./apps/web
 
-RUN pnpm --filter @sala/web build
+RUN pnpm --filter @watchdesk/web build
 
 FROM busybox
 
