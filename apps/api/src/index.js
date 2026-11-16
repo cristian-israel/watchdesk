@@ -35,7 +35,8 @@ const HELP = `
 Uso: node src/index.js [opções]
 
   --port <n>           Porta HTTP/WS (padrão: 7030 ou PORT)
-  --public-host <h>    IP/DNS público TURN (ou PUBLIC_HOST)
+  --public-host <h>    IP público TURN (ou PUBLIC_HOST)
+  --public-origin <u>  Origem HTTPS do site, ex. https://watchdesk.exemplo (ou PUBLIC_ORIGIN)
   --turn-secret <s>    Segredo Coturn (ou TURN_SECRET)
   --turn-host <h>      Host TURN (padrão: PUBLIC_HOST)
   --turn-port <n>      Porta TURN (padrão: 3478)
@@ -71,6 +72,7 @@ const args = parseArgs(process.argv.slice(2));
 const cfg = {
   port: Number(args.port || process.env.PORT || 7030),
   publicHost: args['public-host'] || process.env.PUBLIC_HOST || '',
+  publicOrigin: String(args['public-origin'] || process.env.PUBLIC_ORIGIN || '').replace(/\/$/, ''),
   turnSecret: args['turn-secret'] || process.env.TURN_SECRET || '',
   turnHost: args['turn-host'] || process.env.TURN_HOST || '',
   turnPort: Number(args['turn-port'] || process.env.TURN_PORT || 3478),
@@ -177,11 +179,10 @@ function lanAddresses() {
 }
 
 function viewerLinks(slug) {
-  const hosts = [...(cfg.publicHost ? [cfg.publicHost] : []), ...lanAddresses()];
-  return hosts.map((h) => {
-    const https = Boolean(cfg.publicHost && h === cfg.publicHost);
-    return `${https ? 'https' : 'http'}://${h}/sala/${slug}`;
-  });
+  // PUBLIC_HOST é IP do TURN — inútil como link HTTP atrás do túnel.
+  // PUBLIC_ORIGIN = DNS público do site (ex. https://watchdesk.ilumea.com.br).
+  if (cfg.publicOrigin) return [`${cfg.publicOrigin}/sala/${slug}`];
+  return lanAddresses().map((h) => `http://${h}/sala/${slug}`);
 }
 
 function iceServers(userId = 'anon') {
@@ -1051,6 +1052,7 @@ async function main() {
     console.log(`Porta:  ${cfg.port}`);
     console.log(`WS:     /api/ws`);
     console.log('DB:     ok');
+    console.log(`Site:   ${cfg.publicOrigin || '(PUBLIC_ORIGIN vazio — links usam LAN/local)'}`);
     if (cfg.turnSecret && (cfg.turnHost || cfg.publicHost)) {
       console.log(`TURN:   ${cfg.turnHost || cfg.publicHost}:${cfg.turnPort}`);
     } else {

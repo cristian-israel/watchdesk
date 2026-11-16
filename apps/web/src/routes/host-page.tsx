@@ -44,7 +44,6 @@ export function HostPage() {
   const [hostKey, setHostKey] = useState('')
   const [booting, setBooting] = useState(true)
   const [panel, setPanel] = useState(false)
-  const [links, setLinks] = useState<string[]>([])
   const [shares, setShares] = useState<Map<number, ShareEntry>>(new Map())
   const [roster, setRoster] = useState<RosterMember[]>([])
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
@@ -85,7 +84,6 @@ export function HostPage() {
 
   function openFromSession(data: SessionInfo) {
     setDisplayName(data.displayName)
-    setLinks(data.links || [])
     setActive(data.active)
     setMaxViewers(data.maxViewers)
     setNewMax(data.maxViewers)
@@ -333,11 +331,10 @@ export function HostPage() {
 
   async function patchRoom(body: Record<string, unknown>, labels: { pending: string; success: string }) {
     await action.run(labels, async () => {
-      const data = await apiOrThrow<{ message?: string; links?: string[]; active?: boolean; maxViewers?: number }>(
+      const data = await apiOrThrow<{ message?: string; active?: boolean; maxViewers?: number }>(
         `/api/rooms/${encodeURIComponent(room)}`,
         { method: 'PATCH', body: JSON.stringify(body) },
       )
-      if (data.links) setLinks(data.links)
       if (typeof data.active === 'boolean') setActive(data.active)
       if (typeof data.maxViewers === 'number') {
         setMaxViewers(data.maxViewers)
@@ -486,24 +483,19 @@ export function HostPage() {
             <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Link para espectadores
             </h2>
-            <ul className="flex flex-col gap-2">
-              {(links.length ? links : [`${location.origin}/sala/${room}`]).map((url) => (
-                <li
-                  key={url}
-                  className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
-                >
-                  <span className="font-mono text-xs break-all">{url}</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void copy(url)}
-                  >
-                    Copiar
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <span className="font-mono text-xs break-all">
+                {`${location.origin}/sala/${encodeURIComponent(room)}`}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void copy(`${location.origin}/sala/${encodeURIComponent(room)}`)}
+              >
+                Copiar
+              </Button>
+            </div>
           </section>
 
           <section className="space-y-3 rounded-lg border border-border p-3">

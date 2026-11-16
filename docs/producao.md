@@ -64,7 +64,9 @@ DATABASE_URL=mysql://watchdesk:SENHA_FORTE@HOST:3306/watchdesk
 
 ## Ambiente
 
-Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `EDGE_ALIAS`, `DATABASE_URL`, `PUBLIC_HOST`, `TURN_SECRET`.
+Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `EDGE_ALIAS`, `DATABASE_URL`, `PUBLIC_HOST`, `PUBLIC_ORIGIN`, `TURN_SECRET`.
+
+`PUBLIC_HOST` = IP da VPS (TURN). `PUBLIC_ORIGIN` = URL HTTPS do DNS (ex. `https://watchdesk.ilumea.com.br`) — links de convite; o IP não serve atrás do túnel.
 
 ## Subida
 
