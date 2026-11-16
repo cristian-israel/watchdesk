@@ -1,80 +1,144 @@
 # Produção
 
-Deploy conteinerizado do watchdesk (Caddy + API blue/green + site estático), alinhado ao `vps-prod` (Cloudflare Tunnel na rede `edge`).
+Um VPS, um domínio por instalação. HTTP entra pelo Cloudflare Tunnel (`vps-prod`); a única porta de aplicação no host é a **8189** (WebRTC). O Keeptime e o Watchdesk compartilham o mesmo modelo de deploy; as diferenças de produto estão em [Peculiaridades](#peculiaridades-deste-produto).
 
-## Modelo
+O domínio fica registrado na Hostinger. O DNS fica na Cloudflare. A VPS é a da Hostinger.
+
+## Modelo comum
 
 ```text
 VPS
-  /srv/vps-prod/            ← cloudflared (rede edge) + opcional MySQL/Redis/Mongo (infra)
-  /srv/watchdesk/           ← esta instalação
-    compose.yaml
-    .env
-    caddy/
-    scripts/
-    site/                   ← releases + symlink atual (atualizar-web.sh)
+  vps-prod/                 ← um túnel + rede Docker edge por máquina
+  {produto}/                ← uma pasta = uma instalação (ex.: /srv/watchdesk)
+      compose.yaml
+      .env
+      caddy/
+      scripts/
+      site/
 ```
 
-```text
-Internet → Cloudflare Tunnel → cloudflared (edge) → watchdesk-caddy:80
-                                                      ├─ SPA (site/atual)
-                                                      └─ /api /whep /whip → api_blue|green:9000
-Browser  ── WebRTC mídia UDP/TCP 8189 ──────────────→ api (publicado no host)
-```
+Contrato compartilhado com o Keeptime:
 
+- Sem `cloudflared` no Compose do app; túnel só no **vps-prod**
+- Caddy nas redes `default` + `edge`, com alias `${EDGE_ALIAS}`
 - Profiles `blue` / `green` (API)
-- Caddy **não** publica 80/443; só entra na rede externa `edge` (alias `watchdesk-caddy`)
-- Mídia WebRTC: **8189** TCP+UDP no host (o Tunnel não substitui UDP bem)
-- Sem Mongo/Redis/worker
+- Scripts `atualizar-api.sh` e `atualizar-web.sh` (lock, tag, repositório sobrescritível)
+- Ordem: rede `edge` → `vps-prod` → app → Public Hostname `http://<EDGE_ALIAS>:80`
+- Nomes em instalações novas: `COMPOSE_PROJECT_NAME` e `EDGE_ALIAS` iguais
+- Árvore `deploy/`: `compose.yaml`, `.env`, `caddy/`, `scripts/`, `site/` (criado na VPS)
+- Imagens **não** entram no `.env`
 
-## Pré-requisito: vps-prod
+## Peculiaridades deste produto
 
-```bash
-cd /srv/vps-prod
-./scripts/criar-rede.sh    # redes edge + infra
-docker compose up -d       # cloudflared com TUNNEL_TOKEN
-```
-
-No painel do túnel (Cloudflare Zero Trust), Public Hostname → origem:
+| | Watchdesk |
+| --- | --- |
+| Banco / estado | Nenhum (salas em memória na API) |
+| Porta API | `9000` (só rede interna) |
+| Porta no host | **8189** TCP+UDP (mídia WebRTC / ICE) |
+| Imagens GHCR | `watchdesk-api` / `watchdesk-web` |
+| Caddy | gzip; proxy `/api`, `/whep`, `/whip`; resto = SPA |
+| `PUBLIC_HOST` | IP ou DNS direto da VPS para ICE (não o hostname do Tunnel) |
+| Fonte padrão | `SOURCE=browser` |
+| Limites default | API `512m`; Caddy `256m` |
 
 ```text
-http://watchdesk-caddy:80
+navegador
+  → https://watchdesk.dominio.com     certificado na borda da Cloudflare
+    → túnel (vps-prod)                cloudflared, uma vez por VPS
+      → rede Docker edge
+        → Caddy (EDGE_ALIAS:80)
+            /api /whep /whip          API :9000
+            o restante                arquivos do Vite
+  → UDP/TCP PUBLIC_HOST:8189          mídia WebRTC (fora do túnel)
 ```
+
+| Processo | Função | Quem alcança |
+| --- | --- | --- |
+| cloudflared (vps-prod) | Liga a VPS à Cloudflare | Só a Cloudflare |
+| Caddy | Front + proxy signaling | Só o túnel, via `EDGE_ALIAS` |
+| API | Auth por sala, MediaMTX, WHEP/WHIP | Caddy (HTTP) + browsers na 8189 |
+
+## Domínio
+
+No túnel da VPS (`vps-prod`), o hostname público aponta para `http://<EDGE_ALIAS>:80`. A Cloudflare cria o CNAME do túnel.
+
+Para **WebRTC**, use `PUBLIC_HOST` com o IP da VPS (ou um A **DNS only** / cinza apontando ao IP). O domínio do Tunnel (nuvem laranja) não encaminha UDP 8189.
+
+Firewall: **22** só para admin; **80/443 fechadas** no host (tráfego web via túnel); **8189** UDP+TCP abertas para a mídia.
 
 ## Ambiente
 
-Copie `deploy/.env.example` → `.env` na pasta da instalação (`/srv/watchdesk`).
+O arquivo de produção é `deploy/.env`, copiado de `deploy/.env.example`. Fica ao lado do `compose.yaml`. Não entra no git.
 
-- `DOMAIN=:80` — TLS na Cloudflare; Caddy só HTTP interno
-- `PUBLIC_HOST` — hostname ou IP que o cliente usa no ICE (e que alcança a **8189**)
-- `COMPOSE_PROFILES=blue` (ou `green` após o primeiro flip)
+- `COMPOSE_PROJECT_NAME` / `EDGE_ALIAS` — mesmos valores (ex. `watchdesk`)
+- Sem `TUNNEL_TOKEN` neste arquivo
+- Sem nomes de imagem neste arquivo
+- `PUBLIC_HOST` — obrigatório em produção se quiser vídeo pela internet
+
+As imagens no GHCR são `ghcr.io/cristian-israel/watchdesk-api` e `watchdesk-web`. Cada publicação marca `main` e o sha curto do commit. A última linha do `pnpm deploy:*` já é o comando da VPS, com o sha.
+
+## Caddy
+
+Imagem `caddy:2`. A imagem `watchdesk-web` é só o transporte dos arquivos (`busybox` + `dist` em `/srv`). `Caddyfile` e `upstream.caddy` montados da VPS. Site em `site/atual`.
+
+- `/api`, `/whep`, `/whip` → slot da API em `upstream.caddy`
+- resto → `site/atual` com fallback `index.html` (React Router)
+
+## Arquivos
+
+| Arquivo | Onde roda | Função |
+| --- | --- | --- |
+| `deploy/docker/api.Dockerfile` | Dev | Imagem da API (+ ffmpeg/mediamtx) |
+| `deploy/docker/web.Dockerfile` | Dev | Pacote estático do site |
+| `deploy/caddy/Caddyfile` | VPS | Rotas HTTP |
+| `deploy/caddy/upstream.caddy` | VPS | Slot `api_blue` / `api_green` |
+| `deploy/scripts/atualizar-api.sh` | VPS | Flip de API (libera 8189 antes) |
+| `deploy/scripts/atualizar-web.sh` | VPS | Publica `site/atual` |
+| `deploy/compose.yaml` | VPS | API + Caddy + rede `edge` |
+| `deploy/.env` | VPS | Nomes, `PUBLIC_HOST`, limites |
+| repositório `vps-prod` | VPS | Túnel (`edge`) |
 
 ## Subida
 
-1. `docker login ghcr.io` na VPS  
-2. Conteúdo de `deploy/` em `/srv/watchdesk`; preencher `.env`  
-3. Publicar imagens no PC de dev (`pnpm deploy:api` / `pnpm deploy:web`)  
-4. Na VPS:
+1. Ubuntu, Docker Engine oficial (não Snap), SSH por chave, firewall como acima.
+2. Suba o **vps-prod** (rede `edge`, `TUNNEL_TOKEN`).
+3. `docker login ghcr.io` na máquina de build (write) e na VPS (read).
+4. Publique:
 
-```bash
+```text
+pnpm deploy:api
+pnpm deploy:web
+```
+
+5. Copie `deploy/` para `/srv/watchdesk` (ou outro path). Preencha `.env` (`EDGE_ALIAS`, `PUBLIC_HOST`).
+6. No túnel Cloudflare: Public Hostname → `http://<EDGE_ALIAS>:80`.
+7. Na VPS:
+
+```text
 cd /srv/watchdesk
 sudo chmod +x scripts/*.sh
 sudo mkdir -p site/releases
+sudo docker compose pull
 sudo ./scripts/atualizar-web.sh
 sudo docker compose --profile blue up -d
 ```
 
-Firewall do host: **UDP + TCP 8189** (não precisa abrir 80/443 para o watchdesk).
+## Publicar de novo
 
-## Atualizar
+Nesta máquina:
 
-```bash
-sudo ./scripts/atualizar-web.sh          # ou tag/sha
-sudo ./scripts/atualizar-api.sh          # flip blue↔green (derruba o slot antigo por causa da 8189)
+```text
+pnpm deploy:api
+pnpm deploy:web
 ```
 
-## Notas
+Na VPS:
 
-- Cada transmissor abre `/host/<sala>`, define chave do host e dos espectadores.
-- Espectadores usam `/sala/<sala>` (HTTPS via Cloudflare → `getDisplayMedia` ok).
-- Captura ffmpeg (`SOURCE=screen`) não roda no container Linux; produção usa `SOURCE=browser`.
+```text
+sudo ./scripts/atualizar-api.sh          # ou: ... atualizar-api.sh <sha>
+sudo ./scripts/atualizar-web.sh          # ou: ... atualizar-web.sh <sha>
+```
+
+A atualização da API **derruba o slot antigo antes** de subir o novo (porta 8189 não pode ficar em dois containers). Há uma janela curta sem mídia — diferente do zero-downtime do Keeptime.
+
+O túnel (`vps-prod`) e o Caddy não são recriados nas publicações de API/web.

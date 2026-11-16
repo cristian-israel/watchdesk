@@ -93,4 +93,4 @@ if ! apontar "$proximo"; then
   exit 1
 fi
 
-echo "Deploy da API ($proximo - $tag) concluído."
+echo "Deploy da API ($proximo - $tag) concluído (janela curta na 8189 ao trocar de slot)."

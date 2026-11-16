@@ -1,14 +1,18 @@
-{$DOMAIN} {
+:80 {
 	encode gzip
+
 	handle /api/* {
 		import /etc/caddy/upstream.caddy
 	}
+
 	handle /whep/* {
 		import /etc/caddy/upstream.caddy
 	}
+
 	handle /whip/* {
 		import /etc/caddy/upstream.caddy
 	}
+
 	handle {
 		root * /srv/atual
 		try_files {path} /index.html

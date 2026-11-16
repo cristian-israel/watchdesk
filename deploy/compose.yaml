@@ -7,9 +7,9 @@ x-rotacao-logs: &rotacao_logs
 x-api-limites: &api_limites
   mem_limit: ${API_MEMORY_LIMIT:-512m}
   cpus: ${API_CPUS:-1.0}
-  pids_limit: 256
+  pids_limit: ${API_PIDS_LIMIT:-256}
   tmpfs:
-    - /tmp:size=256m,mode=1777
+    - /tmp:size=${API_TMP_SIZE:-256m},mode=1777
   logging: *rotacao_logs
 
 services:
@@ -23,6 +23,7 @@ services:
       PORT: 9000
       SOURCE: ${SOURCE:-browser}
       PUBLIC_HOST: ${PUBLIC_HOST:-}
+    # Única porta no host: mídia WebRTC (o Tunnel não leva UDP bem).
     ports:
       - "8189:8189/tcp"
       - "8189:8189/udp"
@@ -50,33 +51,23 @@ services:
     networks:
       - default
 
-  # HTTP só na rede edge (cloudflared do vps-prod). Sem publish 80/443 no host.
   caddy:
     init: true
-    image: caddy:2-alpine
+    image: caddy:2
     restart: unless-stopped
     mem_limit: ${CADDY_MEMORY_LIMIT:-256m}
     cpus: ${CADDY_CPUS:-0.5}
     pids_limit: 128
-    environment:
-      # Atrás do Tunnel o TLS fica na Cloudflare; Caddy escuta HTTP.
-      DOMAIN: ${DOMAIN:-:80}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/upstream.caddy:/etc/caddy/upstream.caddy:ro
       - ./site:/srv:ro
-      - caddy_data:/data
-      - caddy_config:/config
     networks:
       default:
       edge:
         aliases:
-          - watchdesk-caddy
+          - ${EDGE_ALIAS}
     logging: *rotacao_logs
-
-volumes:
-  caddy_data:
-  caddy_config:
 
 networks:
   edge:
