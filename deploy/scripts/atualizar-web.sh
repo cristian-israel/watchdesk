@@ -12,7 +12,7 @@ if [ "$tag" = "latest" ]; then
 fi
 
 case "$tag" in ''|*[!A-Za-z0-9_.-]*) echo "Tag de imagem inválida." >&2; exit 1 ;; esac
-repositorio=${WEB_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/sala-tela-web}
+repositorio=${WEB_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/watchdesk-web}
 imagem="$repositorio:$tag"
 docker pull "$imagem"
 id=$(docker create "$imagem")

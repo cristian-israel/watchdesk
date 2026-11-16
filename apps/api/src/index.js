@@ -121,7 +121,7 @@ function countMonitors() {
 
 // ------------------------------------------------------------------ MediaMTX
 
-const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sala-tela-'));
+const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdesk-'));
 const ffmpegPublishPass = crypto.randomBytes(16).toString('hex');
 const internalViewerPass = crypto.randomBytes(16).toString('hex');
 const internalPublisherPass = crypto.randomBytes(16).toString('hex');

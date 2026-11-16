@@ -57,7 +57,7 @@ if [ "$tag" = "latest" ]; then
 fi
 
 case "$tag" in ''|*[!A-Za-z0-9_.-]*) echo "Tag de imagem inválida." >&2; exit 1 ;; esac
-repositorio=${API_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/sala-tela-api}
+repositorio=${API_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/watchdesk-api}
 imagem="$repositorio:$tag"
 export API_IMAGE="$imagem"
 

@@ -15,7 +15,7 @@ x-api-limites: &api_limites
 services:
   api_blue:
     <<: *api_limites
-    image: ${API_IMAGE_BLUE:-ghcr.io/cristian-israel/sala-tela-api:main}
+    image: ${API_IMAGE_BLUE:-ghcr.io/cristian-israel/watchdesk-api:main}
     profiles: [blue]
     env_file: .env
     environment: &api_env
@@ -36,7 +36,7 @@ services:
 
   api_green:
     <<: *api_limites
-    image: ${API_IMAGE_GREEN:-ghcr.io/cristian-israel/sala-tela-api:main}
+    image: ${API_IMAGE_GREEN:-ghcr.io/cristian-israel/watchdesk-api:main}
     profiles: [green]
     env_file: .env
     environment: *api_env

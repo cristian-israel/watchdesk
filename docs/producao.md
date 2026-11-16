@@ -1,12 +1,12 @@
 # Produção
 
-Deploy conteinerizado do sala-tela (Caddy + API blue/green + site estático), no mesmo modelo do starter-monorepo.
+Deploy conteinerizado do watchdesk (Caddy + API blue/green + site estático), no mesmo modelo do starter-monorepo.
 
 ## Modelo
 
 ```text
 VPS
-  sala-tela/
+  watchdesk/
     compose.yaml
     .env
     caddy/
