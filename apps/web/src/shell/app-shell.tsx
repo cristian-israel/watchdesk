@@ -45,17 +45,17 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <NomeGate saveName={saveName} />
   }
 
-  if (immersive) {
-    return <div className="flex h-svh overflow-hidden bg-background">{children}</div>
-  }
-
+  // Chrome fica na árvore (só some via CSS). Trocar de branch remountava a rota
+  // e gerava loop de /api/session + WS fechando antes de conectar.
   return (
-    <div className="flex h-svh overflow-hidden bg-muted/30">
+    <div className={cn('flex h-svh overflow-hidden', immersive ? 'bg-background' : 'bg-muted/30')}>
       <aside
         className={cn(
-          'hidden h-full shrink-0 overflow-hidden transition-[width,opacity] duration-200 sm:block',
-          recolhida ? 'w-0 opacity-0' : 'w-[260px] opacity-100',
+          'h-full shrink-0 overflow-hidden transition-[width,opacity] duration-200',
+          immersive ? 'hidden' : 'hidden sm:block',
+          !immersive && (recolhida ? 'w-0 opacity-0' : 'w-[260px] opacity-100'),
         )}
+        aria-hidden={immersive || undefined}
       >
         <div className="flex h-full w-[260px] flex-col gap-4 p-3">
           <div className="flex items-center gap-2.5 px-2">
@@ -67,9 +67,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 p-0 sm:p-2">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background sm:rounded-xl sm:border sm:shadow-sm">
-          <header className="hidden h-14 shrink-0 items-center px-4 sm:flex">
+      <div className={cn('flex min-w-0 flex-1', immersive ? 'p-0' : 'p-0 sm:p-2')}>
+        <div
+          className={cn(
+            'flex min-h-0 min-w-0 flex-1 flex-col bg-background',
+            !immersive && 'sm:rounded-xl sm:border sm:shadow-sm',
+          )}
+        >
+          <header
+            className={cn(
+              'h-14 shrink-0 items-center px-4',
+              immersive ? 'hidden' : 'hidden sm:flex',
+            )}
+          >
             <Button
               type="button"
               variant="ghost"
@@ -83,7 +93,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex min-h-0 flex-1 flex-col">{children}</div>
         </div>
       </div>
-      <BottomNav />
+      <div className={immersive ? 'hidden' : undefined} aria-hidden={immersive || undefined}>
+        <BottomNav />
+      </div>
     </div>
   )
 }
