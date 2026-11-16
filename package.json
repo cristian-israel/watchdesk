@@ -8,9 +8,9 @@
     "dev:web": "pnpm --filter @sala/web dev",
     "build": "pnpm --filter @sala/web build",
     "build:web": "pnpm --filter @sala/web build",
-    "browser": "pnpm --filter @sala/api start -- --source browser",
-    "screen": "pnpm --filter @sala/api start -- --source screen",
-    "teste": "pnpm --filter @sala/api start -- --source test --monitors 2 --room demo --key teste123 --host-key host123",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "browser": "pnpm --filter @sala/api start",
     "deploy:api": "node -e \"const { execSync } = require('node:child_process'); const sha = execSync('git rev-parse --short HEAD').toString().trim(); const run = (c) => execSync(c, { stdio: 'inherit' }); run('docker build --provenance=false -t ghcr.io/cristian-israel/watchdesk-api:main -t ghcr.io/cristian-israel/watchdesk-api:' + sha + ' -f deploy/docker/api.Dockerfile .'); run('docker push ghcr.io/cristian-israel/watchdesk-api:main'); run('docker push ghcr.io/cristian-israel/watchdesk-api:' + sha); console.log('sudo ./scripts/atualizar-api.sh ' + sha);\"",
     "deploy:web": "node -e \"const { execSync } = require('node:child_process'); const sha = execSync('git rev-parse --short HEAD').toString().trim(); const run = (c) => execSync(c, { stdio: 'inherit' }); run('docker build --provenance=false -t ghcr.io/cristian-israel/watchdesk-web:main -t ghcr.io/cristian-israel/watchdesk-web:' + sha + ' -f deploy/docker/web.Dockerfile .'); run('docker push ghcr.io/cristian-israel/watchdesk-web:main'); run('docker push ghcr.io/cristian-israel/watchdesk-web:' + sha); console.log('sudo ./scripts/atualizar-web.sh ' + sha);\"",
     "deploy:all": "pnpm deploy:api && pnpm deploy:web"

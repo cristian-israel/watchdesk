@@ -5,9 +5,13 @@
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node --watch src/index.js --source browser --port 7030",
-    "start": "node src/index.js",
-    "teste": "node src/index.js --source test --monitors 2 --room demo --key teste123 --host-key host123 --port 7030"
+    "dev": "node --watch src/index.js --port 7030",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "mysql2": "^3.15.3",
+    "ws": "^8.18.3"
   },
   "engines": {
     "node": ">=18"

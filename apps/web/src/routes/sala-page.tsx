@@ -1,262 +1,391 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
+import { ChatSplit } from '@/components/chat-split'
+import { RoomChat } from '@/components/room-chat'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ICE, basicAuth, sleep } from '@/lib/auth'
-
-type StreamInfo = { name: string; whep: string }
+import { api, type SessionInfo } from '@/lib/api'
+import {
+  appendMessage,
+  appendSystem,
+  joinedLine,
+  leftLine,
+  messagesToFeed,
+  type ChatFeedItem,
+} from '@/lib/chat-feed'
+import { useProfile } from '@/shell/profile'
+import { SignalClient, peerKey, type SignalInbound } from '@/lib/signal'
 
 type TileEntry = {
   name: string
-  stopped: boolean
-  stop?: () => void
+  video: HTMLVideoElement
+  stateEl: HTMLElement
+  tile: HTMLDivElement
 }
 
 export function SalaPage() {
   const { room = '' } = useParams()
+  const { displayName: profileName } = useProfile()
+  const [displayName, setDisplayName] = useState('')
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [booting, setBooting] = useState(true)
   const [active, setActive] = useState(false)
-  const [streams, setStreams] = useState<StreamInfo[]>([])
-  const authRef = useRef('')
-  const activeRef = useRef(false)
-  const tilesRef = useRef(new Map<string, TileEntry>())
-  const peersRef = useRef(new Set<RTCPeerConnection>())
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [waiting, setWaiting] = useState(true)
+  const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
+  const [roomActive, setRoomActive] = useState(true)
+
+  const signalRef = useRef<SignalClient | null>(null)
+  const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
+  const peersRef = useRef(new Map<string, RTCPeerConnection>())
+  const tilesRef = useRef(new Map<number, TileEntry>())
   const gridRef = useRef<HTMLDivElement>(null)
+  const welcomedRef = useRef(false)
+  const activeRef = useRef(false)
 
   useEffect(() => {
     const m = location.hash.match(/[#&]k=([^&]*)/)
     const fromLink = m ? decodeURIComponent(m[1]) : ''
-    if (fromLink) history.replaceState(null, '', location.pathname)
-    let stored = ''
-    try {
-      stored = sessionStorage.getItem(`k:${room}`) || ''
-    } catch {
-      /* ok */
+    if (fromLink) {
+      history.replaceState(null, '', location.pathname)
+      setKey(fromLink)
     }
-    const initial = fromLink || stored
-    if (initial) {
-      setKey(initial)
-      void enter(initial)
+    void boot(fromLink)
+    return () => {
+      void leave(false)
     }
-    return () => leave(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
 
-  async function fetchStreams(auth: string) {
-    const r = await fetch(`/api/streams?room=${encodeURIComponent(room)}`, {
-      headers: { Authorization: auth },
-    })
-    if (r.status === 401) throw new Error('Chave incorreta.')
-    if (r.status === 429) throw new Error('Muitas tentativas. Aguarde 1 minuto.')
-    if (!r.ok) throw new Error(`Não foi possível entrar (${r.status}).`)
-    return (await r.json()) as { streams: StreamInfo[] }
+  async function boot(prefillKey = '') {
+    setBooting(true)
+    const meta = await api<{ exists: boolean; active?: boolean }>(`/api/rooms/${encodeURIComponent(room)}`)
+    if (!meta.ok || meta.data.exists === false) {
+      setError('Sala não encontrada.')
+      setBooting(false)
+      return
+    }
+    if (meta.data.active === false) {
+      setRoomActive(false)
+    }
+
+    const res = await api<SessionInfo>('/api/session')
+    if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
+      setDisplayName(res.data.displayName)
+      setActive(true)
+      activeRef.current = true
+      openSignal()
+    } else if (prefillKey) {
+      setKey(prefillKey)
+    }
+    setBooting(false)
   }
 
-  async function enter(viewerKey: string) {
+  function ensureTile(slot: number) {
+    const grid = gridRef.current
+    if (!grid) return null
+    let entry = tilesRef.current.get(slot)
+    if (entry) return entry
+
+    const tile = document.createElement('div')
+    tile.dataset.slot = String(slot)
+    tile.className =
+      'tile relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
+    tile.innerHTML =
+      '<video autoplay muted playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
+      '<span class="tag absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-xs text-white"></span>' +
+      '<span class="state absolute inset-0 grid place-items-center text-sm text-muted-foreground pointer-events-none">Conectando…</span>' +
+      '<button type="button" class="fs absolute right-2.5 top-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white">Tela cheia</button>'
+    const tag = tile.querySelector('.tag') as HTMLElement
+    tag.textContent = `Tela ${slot + 1}`
+    const video = tile.querySelector('video') as HTMLVideoElement
+    const stateEl = tile.querySelector('.state') as HTMLElement
+    tile.querySelector('.fs')!.addEventListener('click', () => {
+      void video.requestFullscreen?.()
+    })
+    video.addEventListener('playing', () => {
+      tile.classList.add('live')
+      setWaiting(false)
+    })
+    grid.appendChild(tile)
+    entry = { name: `Tela ${slot + 1}`, video, stateEl, tile }
+    tilesRef.current.set(slot, entry)
+    return entry
+  }
+
+  function removeTile(slot: number) {
+    const entry = tilesRef.current.get(slot)
+    if (!entry) return
+    tilesRef.current.delete(slot)
+    entry.tile.remove()
+  }
+
+  function syncSlots(slots: number[]) {
+    const wanted = new Set(slots)
+    for (const slot of [...tilesRef.current.keys()]) {
+      if (!wanted.has(slot)) {
+        removeTile(slot)
+        for (const key of [...peersRef.current.keys()]) {
+          if (key.endsWith(`:${slot}`)) closePeer(key)
+        }
+      }
+    }
+    for (const slot of slots) ensureTile(slot)
+    setWaiting(slots.length === 0)
+  }
+
+  function closePeer(key: string) {
+    const pc = peersRef.current.get(key)
+    if (!pc) return
+    peersRef.current.delete(key)
+    try {
+      pc.close()
+    } catch {
+      /* ok */
+    }
+  }
+
+  async function handleOffer(from: string, slot: number, sdp: string) {
+    const tile = ensureTile(slot)
+    if (!tile) return
+
+    const key = peerKey(from, slot)
+    closePeer(key)
+
+    const pc = new RTCPeerConnection({ iceServers: iceRef.current })
+    peersRef.current.set(key, pc)
+
+    pc.ontrack = (e) => {
+      tile.video.srcObject = e.streams[0] || new MediaStream([e.track])
+    }
+    pc.onicecandidate = (ev) => {
+      signalRef.current?.send({
+        type: 'ice',
+        to: from,
+        slot,
+        candidate: ev.candidate ? ev.candidate.toJSON() : null,
+      })
+    }
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') {
+        tile.stateEl.textContent = 'Reconectando…'
+        tile.tile.classList.remove('live')
+      }
+      if (['failed', 'closed'].includes(pc.connectionState)) closePeer(key)
+    }
+
+    await pc.setRemoteDescription({ type: 'offer', sdp })
+    const answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    signalRef.current?.send({ type: 'answer', to: from, slot, sdp: answer.sdp || '' })
+  }
+
+  async function onSignal(msg: SignalInbound) {
+    if (msg.type === 'welcome') {
+      welcomedRef.current = true
+      setError('')
+      iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
+      setRoomActive(msg.active)
+      syncSlots(msg.slots || [])
+      return
+    }
+    if (msg.type === 'error') {
+      setError(msg.message)
+      welcomedRef.current = false
+      if (
+        msg.message.includes('Sessão') ||
+        msg.message.includes('Chave') ||
+        msg.message.includes('desativada') ||
+        msg.message.includes('cheia')
+      ) {
+        leave()
+      }
+      return
+    }
+    if (msg.type === 'auth_changed') {
+      setError(msg.message)
+      leave()
+      return
+    }
+    if (msg.type === 'slots') {
+      syncSlots(msg.slots)
+      return
+    }
+    if (msg.type === 'host_joined') {
+      setChatFeed((prev) =>
+        appendSystem(prev, joinedLine(msg.displayName, 'host'), `host-join-${msg.peerId}`),
+      )
+      return
+    }
+    if (msg.type === 'host_left') {
+      setChatFeed((prev) => appendSystem(prev, 'O host saiu', `host-leave-${Date.now()}`))
+      peersRef.current.forEach((pc) => pc.close())
+      peersRef.current.clear()
+      tilesRef.current.forEach((t) => {
+        t.video.srcObject = null
+        t.tile.classList.remove('live')
+        t.stateEl.textContent = 'Aguardando o host transmitir…'
+      })
+      setWaiting(true)
+      return
+    }
+    if (msg.type === 'viewer_joined') {
+      setChatFeed((prev) =>
+        appendSystem(prev, joinedLine(msg.displayName, 'viewer'), `join-${msg.peerId}`),
+      )
+      return
+    }
+    if (msg.type === 'viewer_left') {
+      setChatFeed((prev) =>
+        appendSystem(
+          prev,
+          leftLine(msg.displayName || 'Espectador', 'viewer'),
+          `leave-${msg.peerId}`,
+        ),
+      )
+      return
+    }
+    if (msg.type === 'offer') {
+      await handleOffer(msg.from, msg.slot, msg.sdp)
+      return
+    }
+    if (msg.type === 'ice') {
+      const pc = peersRef.current.get(peerKey(msg.from, msg.slot))
+      if (!pc || !msg.candidate) return
+      try {
+        await pc.addIceCandidate(msg.candidate)
+      } catch {
+        /* race */
+      }
+      return
+    }
+    if (msg.type === 'chat_history') {
+      setChatFeed(messagesToFeed(msg.messages))
+      return
+    }
+    if (msg.type === 'chat') {
+      setChatFeed((prev) => appendMessage(prev, msg.message))
+      return
+    }
+    if (msg.type === 'room_updated') {
+      setRoomActive(msg.active)
+      if (!msg.active) {
+        setError('Sala desativada pelo host.')
+        leave()
+      }
+    }
+  }
+
+  function openSignal() {
+    signalRef.current?.close()
+    welcomedRef.current = false
+    const client = new SignalClient()
+    signalRef.current = client
+    client.onMessage = (msg) => {
+      void onSignal(msg)
+    }
+    client.onClose = () => {
+      if (activeRef.current && welcomedRef.current) {
+        setError('Conexão perdida. Tentando de novo…')
+        setTimeout(() => {
+          if (activeRef.current) openSignal()
+        }, 1500)
+      }
+    }
+    client.connect({ type: 'hello' })
+  }
+
+  async function enter(e?: FormEvent) {
+    e?.preventDefault()
     setError('')
     setBusy(true)
-    try {
-      const auth = basicAuth('viewer', viewerKey)
-      const { streams: list } = await fetchStreams(auth)
-      try {
-        sessionStorage.setItem(`k:${room}`, viewerKey)
-      } catch {
-        /* ok */
-      }
-      authRef.current = auth
-      activeRef.current = true
-      setActive(true)
-      setStreams(list)
-      syncTiles(list, auth)
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(() => void poll(auth), 3000)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Falha ao entrar.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function poll(auth: string) {
-    try {
-      const { streams: list } = await fetchStreams(auth)
-      setStreams(list)
-      syncTiles(list, auth)
-    } catch (e) {
-      if (e instanceof Error && e.message === 'Chave incorreta.') leave()
-    }
-  }
-
-  function syncTiles(list: StreamInfo[], auth: string) {
-    const grid = gridRef.current
-    if (!grid) return
-    const wanted = new Set(list.map((s) => s.whep))
-    for (const [url, t] of tilesRef.current) {
-      if (wanted.has(url)) continue
-      t.stopped = true
-      t.stop?.()
-      grid.querySelector(`[data-whep="${CSS.escape(url)}"]`)?.remove()
-      tilesRef.current.delete(url)
-    }
-    for (const s of list) {
-      if (tilesRef.current.has(s.whep)) continue
-      const tile = document.createElement('div')
-      tile.dataset.whep = s.whep
-      tile.className =
-        'tile relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
-      tile.innerHTML =
-        '<video autoplay muted playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
-        '<span class="tag absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-xs text-white"></span>' +
-        '<span class="state absolute inset-0 grid place-items-center text-sm text-muted-foreground pointer-events-none">Conectando…</span>' +
-        '<button type="button" class="fs absolute right-2.5 top-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white">Tela cheia</button>'
-      const tag = tile.querySelector('.tag') as HTMLElement
-      tag.textContent = s.name
-      const video = tile.querySelector('video') as HTMLVideoElement
-      tile.querySelector('.fs')!.addEventListener('click', () => {
-        void video.requestFullscreen?.()
-      })
-      video.addEventListener('playing', () => tile.classList.add('live'))
-      grid.appendChild(tile)
-      const entry: TileEntry = { name: s.name, stopped: false }
-      tilesRef.current.set(s.whep, entry)
-      void keepPlaying(s, entry, video, tile, auth)
-    }
-  }
-
-  async function keepPlaying(
-    stream: StreamInfo,
-    entry: TileEntry,
-    video: HTMLVideoElement,
-    tile: HTMLElement,
-    auth: string,
-  ) {
-    const state = tile.querySelector('.state') as HTMLElement
-    while (activeRef.current && !entry.stopped) {
-      try {
-        await whepOnce(stream.whep, video, auth, entry)
-      } catch (e) {
-        state.textContent =
-          e instanceof Error && e.message === 'sem-stream'
-            ? 'Aguardando o host transmitir…'
-            : 'Reconectando…'
-      }
-      tile.classList.remove('live')
-      if (!entry.stopped) await sleep(2000)
-    }
-  }
-
-  async function whepOnce(
-    url: string,
-    video: HTMLVideoElement,
-    auth: string,
-    entry: TileEntry,
-  ) {
-    const pc = new RTCPeerConnection({ iceServers: ICE })
-    peersRef.current.add(pc)
-    try {
-      pc.addTransceiver('video', { direction: 'recvonly' })
-      pc.ontrack = (e) => {
-        video.srcObject = e.streams[0]
-      }
-      await pc.setLocalDescription(await pc.createOffer())
-      await new Promise<void>((resolve) => {
-        if (pc.iceGatheringState === 'complete') return resolve()
-        const t = setTimeout(() => resolve(), 1500)
-        pc.onicegatheringstatechange = () => {
-          if (pc.iceGatheringState === 'complete') {
-            clearTimeout(t)
-            resolve()
-          }
-        }
-      })
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/sdp', Authorization: auth },
-        body: pc.localDescription!.sdp,
-      })
-      if (r.status === 401) {
-        activeRef.current = false
-        throw new Error('auth')
-      }
-      if (r.status === 404) throw new Error('sem-stream')
-      if (r.status !== 201) throw new Error(`http-${r.status}`)
-      await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() })
-      await new Promise<void>((resolve) => {
-        entry.stop = resolve
-        pc.onconnectionstatechange = () => {
-          if (['failed', 'closed'].includes(pc.connectionState)) resolve()
-        }
-      })
-    } finally {
-      peersRef.current.delete(pc)
-      pc.close()
-    }
-  }
-
-  function leave(clearKey = true) {
-    activeRef.current = false
-    setActive(false)
-    if (clearKey) {
-      try {
-        sessionStorage.removeItem(`k:${room}`)
-      } catch {
-        /* ok */
-      }
-      setKey('')
-    }
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = null
-    tilesRef.current.forEach((t) => {
-      t.stopped = true
-      t.stop?.()
+    const res = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
+      method: 'POST',
+      body: JSON.stringify({ viewerKey: key }),
     })
-    tilesRef.current.clear()
-    gridRef.current?.replaceChildren()
+    setBusy(false)
+    if (!res.ok) {
+      setError(res.message)
+      return
+    }
+    setDisplayName(res.data.displayName)
+    setActive(true)
+    activeRef.current = true
+    openSignal()
+  }
+
+  async function leave(clearSession = true) {
+    activeRef.current = false
+    welcomedRef.current = false
+    setActive(false)
+    signalRef.current?.close()
+    signalRef.current = null
     peersRef.current.forEach((pc) => pc.close())
     peersRef.current.clear()
-    setStreams([])
+    tilesRef.current.forEach((t) => t.tile.remove())
+    tilesRef.current.clear()
+    gridRef.current?.replaceChildren()
+    setChatFeed([])
+    setWaiting(true)
+    if (clearSession) {
+      await api('/api/logout', { method: 'POST' })
+      setKey('')
+    }
   }
 
-  function onSubmit(e: FormEvent) {
-    e.preventDefault()
-    void enter(key)
+  if (booting) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 text-sm text-muted-foreground sm:pb-0">
+        Carregando…
+      </div>
+    )
   }
 
   if (!active) {
     return (
-      <div className="flex min-h-dvh items-center justify-center p-4">
+      <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 sm:pb-0">
         <Card className="w-full max-w-sm">
           <CardHeader>
             <CardTitle>Sala {room}</CardTitle>
-            <CardDescription>Digite a chave dos espectadores para assistir.</CardDescription>
+            <CardDescription>
+              {!roomActive
+                ? 'Esta sala está desativada no momento.'
+                : 'Informe a chave dos espectadores.'}
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <form className="flex flex-col gap-3" onSubmit={onSubmit} autoComplete="off">
-              <div className="space-y-2">
-                <Label htmlFor="key">Chave</Label>
-                <Input
-                  id="key"
-                  type="password"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                  required
-                  autoFocus
-                />
-              </div>
-              <Button type="submit" disabled={busy} className="w-full">
-                Entrar
-              </Button>
-              {error ? (
+            {roomActive ? (
+              <form className="flex flex-col gap-3" onSubmit={(e) => void enter(e)} autoComplete="off">
+                <div className="space-y-2">
+                  <Label htmlFor="key">Chave</Label>
+                  <Input
+                    id="key"
+                    type="password"
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <Button type="submit" disabled={busy} className="w-full">
+                  Entrar
+                </Button>
+                {error ? (
+                  <p className="text-sm text-destructive" role="alert">
+                    {error}
+                  </p>
+                ) : null}
+              </form>
+            ) : (
+              error ? (
                 <p className="text-sm text-destructive" role="alert">
                   {error}
                 </p>
-              ) : null}
-            </form>
+              ) : null
+            )}
           </CardContent>
         </Card>
       </div>
@@ -264,21 +393,36 @@ export function SalaPage() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="flex items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
-        <b className="font-medium">Sala {room}</b>
-        <Button type="button" variant="outline" size="sm" onClick={() => leave()}>
-          Sair
-        </Button>
-      </header>
-      <div
-        ref={gridRef}
-        className="grid flex-1 content-start gap-3 p-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))]"
-      />
-      {!streams.length ? (
-        <p className="px-4 pb-4 text-sm text-muted-foreground">Aguardando o host transmitir…</p>
-      ) : null}
-      <style>{`.tile.live .state{display:none}`}</style>
-    </div>
+    <ChatSplit
+      chat={
+        <RoomChat
+          items={chatFeed}
+          selfName={profileName || displayName}
+          onSend={(body) => signalRef.current?.send({ type: 'chat', body })}
+        />
+      }
+    >
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="flex items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
+          <b className="font-medium">Sala {room}</b>
+          <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>
+            Sair
+          </Button>
+        </header>
+        <div
+          ref={gridRef}
+          className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto p-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))]"
+        />
+        {waiting ? (
+          <p className="px-4 pb-4 text-sm text-muted-foreground">Aguardando o host transmitir…</p>
+        ) : null}
+        {error ? (
+          <p className="px-4 pb-4 text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <style>{`.tile.live .state{display:none}`}</style>
+      </div>
+    </ChatSplit>
   )
 }

@@ -1,45 +1,28 @@
 # watchdesk
 
-Transmite telas para uma página web protegida por chave (WebRTC). Cada transmissor define a chave dos espectadores da própria sala.
+Transmite telas (WebRTC **P2P**), com salas no MySQL, sessão por cookie, chat e TURN só se a conexão direta falhar.
 
-```
-apps/web (Vite) ──Caddy──▶ estático
-apps/api (Node)  ◀─ /api /whep /whip ─┘
-       └─ MediaMTX ◀── WebRTC mídia :7031
-```
-
-## Desenvolvimento
-
-Requisitos: **Node 18+**, **pnpm**, `ffmpeg` e `mediamtx` no `PATH` ou em `./bin`.
+## Desenvolvimento (igual Keeptime)
 
 ```bash
+cp .env.example .env          # DATABASE_URL aponta para 127.0.0.1:3306
 pnpm install
-pnpm dev          # API :7030 + Vite :7130
+pnpm db:up                    # sobe MySQL local (Docker)
+pnpm dev                      # API :7030 + Vite :7130
 ```
 
-- Assistir: `http://localhost:7130/sala/casa`
-- Transmitir: `http://localhost:7130/host/casa` (localhost ou HTTPS)
+- Salas: http://localhost:7130/salas  
+- Assistir: http://localhost:7130/sala/casa  
+- Transmitir: http://localhost:7130/host/casa  
 
-| Script | O que faz |
-|--------|-----------|
-| `pnpm browser` | Só API em modo navegador |
-| `pnpm screen` | API com captura ffmpeg (Windows) |
-| `pnpm teste` | Vídeo de teste (`demo` / chave `teste123`) |
+O `.env` na raiz do repo é lido pela API (via `dotenv`), como no Keeptime. Migrations rodam no boot da API.
+
+Se a porta **3306** já estiver ocupada (ex.: MySQL do Keeptime), ou pare o outro Compose, ou reutilize esse MySQL criando o database/user `watchdesk` e mantendo o mesmo `DATABASE_URL`.
+
+```bash
+pnpm db:down                  # para o MySQL local
+```
 
 ## Produção
 
-Mesmo modelo do Keeptime: `vps-prod` (túnel) + pasta da instalação com Caddy na rede `edge`. Ver [docs/producao.md](docs/producao.md).
-
-```bash
-pnpm deploy:web
-pnpm deploy:api
-# na VPS: sudo ./scripts/atualizar-web.sh <sha>
-#         sudo ./scripts/atualizar-api.sh <sha>
-```
-
-## Apps
-
-| App | Papel |
-|-----|--------|
-| `apps/api` | MediaMTX, auth por sala, proxy WHEP/WHIP |
-| `apps/web` | SPA React |
+Ver [docs/producao.md](docs/producao.md). `deploy/.env` usa `DATABASE_URL` do MySQL da VPS (sem MySQL neste Compose de prod).

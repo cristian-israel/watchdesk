@@ -15,9 +15,7 @@ export default defineConfig({
     port: 7130,
     strictPort: true,
     proxy: {
-      '^/api/.*': { target: 'http://localhost:7030', changeOrigin: true },
-      '^/whep/.*': { target: 'http://localhost:7030', changeOrigin: true },
-      '^/whip/.*': { target: 'http://localhost:7030', changeOrigin: true },
+      '^/api/.*': { target: 'http://localhost:7030', changeOrigin: true, ws: true },
     },
   },
 })

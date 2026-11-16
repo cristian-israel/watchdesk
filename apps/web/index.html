@@ -3,18 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
     <meta name="referrer" content="no-referrer" />
-    <meta name="description" content="Sala de tela — transmissão WebRTC." />
-    <title>Sala de tela</title>
+    <meta name="description" content="Watchdesk — transmissão de tela WebRTC." />
+    <title>Watchdesk</title>
     <script>
-      (() => {
+      (function () {
+        var key = 'appearance'
+        var modes = { system: 1, light: 1, dark: 1 }
+        var themes = { default: 1, ocean: 1, forest: 1, amber: 1, slate: 1, rose: 1, contrast: 1 }
+        var fonts = { comfortaa: 1, geist: 1, nunito: 1, 'dm-sans': 1, outfit: 1, manrope: 1, 'space-grotesk': 1, system: 1 }
+        var legacy = { mono: 'default', azul: 'ocean', verde: 'forest', ambar: 'amber' }
+        var bars = {
+          default: ['#ffffff', '#12110e'],
+          ocean: ['#e0f2fe', '#082f49'],
+          forest: ['#dcfce7', '#052e16'],
+          amber: ['#fef3c7', '#451a03'],
+          slate: ['#f1f5f9', '#020617'],
+          rose: ['#ffe4e6', '#4c0519'],
+          contrast: ['#ffffff', '#000000']
+        }
+        var appearance = { mode: 'system', theme: 'default', font: 'comfortaa' }
         try {
-          const mode = localStorage.getItem('theme') || 'system'
-          const dark =
-            mode === 'dark' ||
-            (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-          document.documentElement.classList.toggle('dark', dark)
-        } catch {}
+          var raw = JSON.parse(localStorage.getItem(key) || 'null')
+          if (raw && typeof raw === 'object') {
+            if (modes[raw.mode]) appearance.mode = raw.mode
+            var theme = legacy[raw.theme] || raw.theme
+            if (themes[theme]) appearance.theme = theme
+            if (fonts[raw.font]) appearance.font = raw.font
+          }
+        } catch (error) {}
+        var dark = appearance.mode === 'dark' || (appearance.mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        var root = document.documentElement
+        root.classList.toggle('dark', dark)
+        root.dataset.theme = appearance.theme
+        root.dataset.font = appearance.font
+        var meta = document.querySelector('meta[name="theme-color"]')
+        if (meta) meta.setAttribute('content', bars[appearance.theme][dark ? 1 : 0])
       })()
     </script>
   </head>

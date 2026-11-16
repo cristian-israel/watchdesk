@@ -62,7 +62,6 @@ imagem="$repositorio:$tag"
 export API_IMAGE="$imagem"
 
 ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):7030$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
-# Compatível com upstream antigo (:9000) na primeira migração.
 if [ -z "$ativo" ]; then
   ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):9000$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
 fi
@@ -73,12 +72,6 @@ elif [ "$ativo" = "green" ]; then
   proximo="blue"
 else
   proximo="blue"
-fi
-
-# Porta WEBRTC (7031) não pode ficar em dois slots: derruba o ativo antes de subir o novo.
-if [ -n "$ativo" ] && [ "$ativo" != "$proximo" ]; then
-  echo "==> Liberando porta de mídia (derrubando api_$ativo)..."
-  recolher "$ativo"
 fi
 
 echo "==> Subindo api_$proximo ($tag)..."
@@ -97,4 +90,9 @@ if ! apontar "$proximo"; then
   exit 1
 fi
 
-echo "Deploy da API ($proximo - $tag) concluído (janela curta na mídia ao trocar de slot)."
+if [ -n "$ativo" ] && [ "$ativo" != "$proximo" ]; then
+  echo "==> Recolhendo api_$ativo..."
+  recolher "$ativo"
+fi
+
+echo "Deploy da API ($proximo - $tag) concluído."
