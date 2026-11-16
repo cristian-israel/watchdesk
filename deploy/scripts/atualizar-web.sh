@@ -20,13 +20,7 @@ trap 'docker rm -f "$id" >/dev/null 2>&1 || true; rmdir "$lock" 2>/dev/null || t
 
 identificador=$(docker inspect -f '{{.Id}}' "$id" 2>/dev/null | cut -c8-19 || echo "$tag")
 
-atual=$(readlink site/atual 2>/dev/null || true)
-if [ "$atual" = "releases/$identificador" ]; then
-  nome="$identificador.preparo"
-else
-  nome="$identificador"
-fi
-destino="site/releases/$nome"
+destino="site/releases/$identificador"
 rm -rf "$destino"
 mkdir -p "$destino"
 if ! docker cp "$id:/opt/." "$destino" || [ ! -f "$destino/index.html" ]; then
@@ -35,13 +29,17 @@ if ! docker cp "$id:/opt/." "$destino" || [ ! -f "$destino/index.html" ]; then
   exit 1
 fi
 
-ln -sfn "releases/$nome" site/atual.novo
+# Diretório real em site/atual (não symlink): o file_server do Caddy/Go
+# recusa servir quando o root é symlink para releases/.
+rm -rf site/atual.novo
+cp -a "$destino" site/atual.novo
 mv -Tf site/atual.novo site/atual
 
-if [ "$nome" = "$identificador" ]; then
-  rm -rf "site/releases/$identificador.preparo"
-else
-  rm -rf "site/releases/$identificador"
-fi
+# Mantém só o release atual em disco.
+for d in site/releases/*; do
+  [ -e "$d" ] || continue
+  [ "$(basename "$d")" = "$identificador" ] && continue
+  rm -rf "$d"
+done
 
 echo "Frontend atualizado com sucesso para versão $tag ($identificador)!"
