@@ -1,0 +1,22 @@
+{
+  "name": "sala-tela",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sala/api --filter @sala/web dev",
+    "dev:api": "pnpm --filter @sala/api dev",
+    "dev:web": "pnpm --filter @sala/web dev",
+    "build": "pnpm --filter @sala/web build",
+    "build:web": "pnpm --filter @sala/web build",
+    "browser": "pnpm --filter @sala/api start -- --source browser",
+    "screen": "pnpm --filter @sala/api start -- --source screen",
+    "teste": "pnpm --filter @sala/api start -- --source test --monitors 2 --room demo --key teste123 --host-key host123",
+    "deploy:api": "sha=$(git rev-parse --short HEAD) && docker build -t ghcr.io/cristian-israel/sala-tela-api:main -t ghcr.io/cristian-israel/sala-tela-api:$sha -f deploy/docker/api.Dockerfile . && docker push ghcr.io/cristian-israel/sala-tela-api:main && docker push ghcr.io/cristian-israel/sala-tela-api:$sha && echo sudo ./scripts/atualizar-api.sh",
+    "deploy:web": "sha=$(git rev-parse --short HEAD) && docker build -t ghcr.io/cristian-israel/sala-tela-web:main -t ghcr.io/cristian-israel/sala-tela-web:$sha -f deploy/docker/web.Dockerfile . && docker push ghcr.io/cristian-israel/sala-tela-web:main && docker push ghcr.io/cristian-israel/sala-tela-web:$sha && echo sudo ./scripts/atualizar-web.sh",
+    "deploy:all": "pnpm deploy:api && pnpm deploy:web"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

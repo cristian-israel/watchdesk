@@ -1,0 +1,15 @@
+{
+  "name": "@sala/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js --source browser --port 9000",
+    "start": "node src/index.js",
+    "teste": "node src/index.js --source test --monitors 2 --room demo --key teste123 --host-key host123 --port 9000"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

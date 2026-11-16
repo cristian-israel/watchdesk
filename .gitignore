@@ -147,3 +147,12 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+deploy/.env
+deploy/site
+deploy/.deploy-*.lock
+
+bin/*.exe
+bin/ffmpeg
+bin/mediamtx
+.DS_Store
