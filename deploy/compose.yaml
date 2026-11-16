@@ -58,6 +58,7 @@ services:
     restart: unless-stopped
     networks:
       - default
+      - infra
 
   api_green:
     <<: *api_limites
@@ -69,6 +70,7 @@ services:
     restart: unless-stopped
     networks:
       - default
+      - infra
 
   caddy:
     init: true
@@ -92,3 +94,6 @@ networks:
   edge:
     external: true
     name: edge
+  infra:
+    external: true
+    name: infra
