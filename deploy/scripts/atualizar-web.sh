@@ -18,9 +18,16 @@ docker pull "$imagem"
 id=$(docker create "$imagem")
 trap 'docker rm -f "$id" >/dev/null 2>&1 || true; rmdir "$lock" 2>/dev/null || true' EXIT
 
+# Usa o digest curto da imagem ou a tag para versionar a pasta de release
 identificador=$(docker inspect -f '{{.Id}}' "$id" 2>/dev/null | cut -c8-19 || echo "$tag")
 
-destino="site/releases/$identificador"
+atual=$(readlink site/atual 2>/dev/null || true)
+if [ "$atual" = "releases/$identificador" ]; then
+  nome="$identificador.preparo"
+else
+  nome="$identificador"
+fi
+destino="site/releases/$nome"
 rm -rf "$destino"
 mkdir -p "$destino"
 if ! docker cp "$id:/opt/." "$destino" || [ ! -f "$destino/index.html" ]; then
@@ -29,17 +36,18 @@ if ! docker cp "$id:/opt/." "$destino" || [ ! -f "$destino/index.html" ]; then
   exit 1
 fi
 
-# Diretório real em site/atual (não symlink): o file_server do Caddy/Go
-# recusa servir quando o root é symlink para releases/.
-rm -rf site/atual.novo
-cp -a "$destino" site/atual.novo
+# Migração: atual como diretório real impede o swap por symlink (mv -T).
+if [ -d site/atual ] && [ ! -L site/atual ]; then
+  rm -rf site/atual
+fi
+
+ln -sfn "releases/$nome" site/atual.novo
 mv -Tf site/atual.novo site/atual
 
-# Mantém só o release atual em disco.
-for d in site/releases/*; do
-  [ -e "$d" ] || continue
-  [ "$(basename "$d")" = "$identificador" ] && continue
-  rm -rf "$d"
-done
+if [ "$nome" = "$identificador" ]; then
+  rm -rf "site/releases/$identificador.preparo"
+else
+  rm -rf "site/releases/$identificador"
+fi
 
 echo "Frontend atualizado com sucesso para versão $tag ($identificador)!"
