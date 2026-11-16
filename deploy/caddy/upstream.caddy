@@ -1,1 +1,1 @@
-reverse_proxy api_blue:9000
+reverse_proxy api_blue:7030

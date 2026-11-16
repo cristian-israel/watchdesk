@@ -5,7 +5,7 @@ Transmite telas para uma página web protegida por chave (WebRTC). Cada transmis
 ```
 apps/web (Vite) ──Caddy──▶ estático
 apps/api (Node)  ◀─ /api /whep /whip ─┘
-       └─ MediaMTX ◀── WebRTC mídia :8189
+       └─ MediaMTX ◀── WebRTC mídia :7031
 ```
 
 ## Desenvolvimento
@@ -14,11 +14,11 @@ Requisitos: **Node 18+**, **pnpm**, `ffmpeg` e `mediamtx` no `PATH` ou em `./bin
 
 ```bash
 pnpm install
-pnpm dev          # API :9000 + Vite :9100
+pnpm dev          # API :7030 + Vite :7130
 ```
 
-- Assistir: `http://localhost:9100/sala/casa`
-- Transmitir: `http://localhost:9100/host/casa` (localhost ou HTTPS)
+- Assistir: `http://localhost:7130/sala/casa`
+- Transmitir: `http://localhost:7130/host/casa` (localhost ou HTTPS)
 
 | Script | O que faz |
 |--------|-----------|

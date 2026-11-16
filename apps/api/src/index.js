@@ -20,7 +20,8 @@ const crypto = require('crypto');
 const HELP = `
 Uso: node src/index.js [opções]
 
-  --port <n>           Porta HTTP da API (padrão: 9000 ou PORT)
+  --port <n>           Porta HTTP da API (padrão: 7030 ou PORT)
+  --webrtc-port <n>    Porta mídia WebRTC (padrão: 7031 ou WEBRTC_PORT)
   --monitors <n|auto>  Quantidade de monitores (padrão: auto)
   --fps <n>            Quadros por segundo (padrão: 30)
   --bitrate <kbps>     Bitrate de vídeo por monitor (padrão: 4000)
@@ -63,7 +64,8 @@ function findBin(name) {
 }
 
 const cfg = {
-  port: Number(args.port || process.env.PORT || 9000),
+  port: Number(args.port || process.env.PORT || 7030),
+  webrtcPort: Number(args['webrtc-port'] || process.env.WEBRTC_PORT || 7031),
   monitors: args.monitors || 'auto',
   fps: Number(args.fps || process.env.FPS || 30),
   bitrate: Number(args.bitrate || process.env.BITRATE || 4000),
@@ -146,8 +148,8 @@ rtspTransports: [tcp]
 
 webrtc: yes
 webrtcAddress: 127.0.0.1:8889
-webrtcLocalUDPAddress: :8189
-webrtcLocalTCPAddress: :8189
+webrtcLocalUDPAddress: :${cfg.webrtcPort}
+webrtcLocalTCPAddress: :${cfg.webrtcPort}
 webrtcAdditionalHosts: ${extraHosts}
 webrtcICEServers2:
   - url: stun:stun.l.google.com:19302
@@ -554,7 +556,7 @@ function main() {
       console.log(`Viewer: ${cfg.key}`);
       console.log(`Host:   ${cfg.hostKey}\n`);
     }
-    console.log('Liberar firewall: TCP API + UDP/TCP 8189. Ctrl+C para encerrar.\n');
+    console.log(`Liberar firewall (prod): UDP+TCP ${cfg.webrtcPort}. Ctrl+C para encerrar.\n`);
   });
 }
 

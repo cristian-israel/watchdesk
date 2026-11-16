@@ -20,15 +20,16 @@ services:
     env_file: .env
     environment: &api_env
       NODE_ENV: production
-      PORT: 9000
+      PORT: ${PORT:-7030}
+      WEBRTC_PORT: ${WEBRTC_PORT:-7031}
       SOURCE: ${SOURCE:-browser}
       PUBLIC_HOST: ${PUBLIC_HOST:-}
     # Única porta no host: mídia WebRTC (o Tunnel não leva UDP bem).
     ports:
-      - "8189:8189/tcp"
-      - "8189:8189/udp"
+      - "${WEBRTC_PORT:-7031}:${WEBRTC_PORT:-7031}/tcp"
+      - "${WEBRTC_PORT:-7031}:${WEBRTC_PORT:-7031}/udp"
     healthcheck: &api_health
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7030/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -44,8 +45,8 @@ services:
     env_file: .env
     environment: *api_env
     ports:
-      - "8189:8189/tcp"
-      - "8189:8189/udp"
+      - "${WEBRTC_PORT:-7031}:${WEBRTC_PORT:-7031}/tcp"
+      - "${WEBRTC_PORT:-7031}:${WEBRTC_PORT:-7031}/udp"
     healthcheck: *api_health
     restart: unless-stopped
     networks:

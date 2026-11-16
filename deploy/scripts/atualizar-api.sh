@@ -33,7 +33,7 @@ recolher() {
 apontar() {
   slot=$1
   anterior=$(cat caddy/upstream.caddy 2>/dev/null || echo "")
-  printf 'reverse_proxy api_%s:9000\n' "$slot" > caddy/upstream.caddy
+  printf 'reverse_proxy api_%s:7030\n' "$slot" > caddy/upstream.caddy
   if ! docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
     printf '%s\n' "$anterior" > caddy/upstream.caddy
     return 1
@@ -61,7 +61,11 @@ repositorio=${API_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/watchdesk-api}
 imagem="$repositorio:$tag"
 export API_IMAGE="$imagem"
 
-ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):9000$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
+ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):7030$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
+# Compatível com upstream antigo (:9000) na primeira migração.
+if [ -z "$ativo" ]; then
+  ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):9000$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
+fi
 
 if [ "$ativo" = "blue" ]; then
   proximo="green"
@@ -71,9 +75,9 @@ else
   proximo="blue"
 fi
 
-# Porta 8189 (WebRTC) não pode ficar em dois slots: derruba o ativo antes de subir o novo.
+# Porta WEBRTC (7031) não pode ficar em dois slots: derruba o ativo antes de subir o novo.
 if [ -n "$ativo" ] && [ "$ativo" != "$proximo" ]; then
-  echo "==> Liberando porta 8189 (derrubando api_$ativo)..."
+  echo "==> Liberando porta de mídia (derrubando api_$ativo)..."
   recolher "$ativo"
 fi
 
@@ -93,4 +97,4 @@ if ! apontar "$proximo"; then
   exit 1
 fi
 
-echo "Deploy da API ($proximo - $tag) concluído (janela curta na 8189 ao trocar de slot)."
+echo "Deploy da API ($proximo - $tag) concluído (janela curta na mídia ao trocar de slot)."

@@ -5,9 +5,9 @@
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node --watch src/index.js --source browser --port 9000",
+    "dev": "node --watch src/index.js --source browser --port 7030",
     "start": "node src/index.js",
-    "teste": "node src/index.js --source test --monitors 2 --room demo --key teste123 --host-key host123 --port 9000"
+    "teste": "node src/index.js --source test --monitors 2 --room demo --key teste123 --host-key host123 --port 7030"
   },
   "engines": {
     "node": ">=18"

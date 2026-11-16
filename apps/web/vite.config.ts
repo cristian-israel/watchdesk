@@ -12,12 +12,12 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 9100,
+    port: 7130,
     strictPort: true,
     proxy: {
-      '^/api/.*': { target: 'http://localhost:9000', changeOrigin: true },
-      '^/whep/.*': { target: 'http://localhost:9000', changeOrigin: true },
-      '^/whip/.*': { target: 'http://localhost:9000', changeOrigin: true },
+      '^/api/.*': { target: 'http://localhost:7030', changeOrigin: true },
+      '^/whep/.*': { target: 'http://localhost:7030', changeOrigin: true },
+      '^/whip/.*': { target: 'http://localhost:7030', changeOrigin: true },
     },
   },
 })

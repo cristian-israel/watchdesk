@@ -16,11 +16,12 @@ COPY apps/api/package.json ./package.json
 COPY apps/api/src ./src
 
 ENV NODE_ENV=production
-ENV PORT=9000
+ENV PORT=7030
+ENV WEBRTC_PORT=7031
 ENV SOURCE=browser
 ENV FFMPEG=/usr/bin/ffmpeg
 ENV MEDIAMTX=/usr/local/bin/mediamtx
 
-EXPOSE 9000 8189/tcp 8189/udp
+EXPOSE 7030 7031/tcp 7031/udp
 
 CMD ["node", "src/index.js"]
