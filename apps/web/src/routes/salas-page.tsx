@@ -64,23 +64,15 @@ export function SalasPage() {
   if (room) {
     const convite = viewerInviteUrl(room.slug, room.viewerInvite || '')
     return (
-      <Pagina
-        titulo="Salas"
-        descricao="Para transmitir com controle remoto, use o Companion no PC do agente. Aqui no navegador: convite e painel opcional."
-      >
+      <Pagina titulo="Salas" descricao="Este aparelho já tem uma sala. Exclua para criar outra.">
         <Card>
           <CardHeader>
             <CardTitle>{displayName || room.slug}</CardTitle>
             <CardDescription>
-              {room.slug} · {room.active ? 'ativa' : 'desativada'} · máx. {room.maxViewers}{' '}
-              espectadores
+              {room.slug} · {room.active ? 'ativa' : 'desativada'} · máx. {room.maxViewers} espectadores
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              Agente: baixe o Companion na página Início — criar sala, convite, transmitir e
-              promover ficam no app. Este painel web só se precisar.
-            </p>
             <div className="space-y-2">
               <Label htmlFor="convite">Link de convite</Label>
               <div className="flex gap-2">
@@ -92,7 +84,7 @@ export function SalasPage() {
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button type="button" disabled={action.busy} onClick={() => void transmitir()} className="sm:flex-1">
-                Abrir painel web
+                Transmitir
               </Button>
               <Button
                 type="button"
@@ -111,16 +103,11 @@ export function SalasPage() {
   }
 
   return (
-    <Pagina
-      titulo="Salas"
-      descricao="Uma sala por aparelho. Preferência: criar e transmitir pelo Companion; a web é backup/painel."
-    >
+    <Pagina titulo="Salas" descricao="Uma sala por aparelho. O link de convite já inclui a chave.">
       <Card>
         <CardHeader>
           <CardTitle>Nova sala</CardTitle>
-          <CardDescription>
-            Preferível criar no Companion. Aqui também funciona; o link de convite já inclui a chave.
-          </CardDescription>
+          <CardDescription>Depois de criar, transmita por aqui. Para outra sala, exclua esta.</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="flex flex-col gap-3" onSubmit={(e) => void onCreate(e)} autoComplete="off">

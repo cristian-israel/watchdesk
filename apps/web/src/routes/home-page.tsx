@@ -1,17 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
-import { CircleHelp, Download } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
@@ -25,32 +15,15 @@ type RecentItem = {
   lastSeenAt: string
 }
 
-type CompanionMeta = {
-  version: string
-  downloadUrl: string
-  downloadUrlLinux: string
-  notes?: string
-}
-
-function detectOs(): 'windows' | 'linux' | 'other' {
-  const ua = navigator.userAgent.toLowerCase()
-  if (ua.includes('windows')) return 'windows'
-  if (ua.includes('linux') || ua.includes('x11')) return 'linux'
-  return 'other'
-}
-
 export function HomePage() {
   const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [erro, setErro] = useState('')
   const [recent, setRecent] = useState<RecentItem[]>([])
   const [recentLoading, setRecentLoading] = useState(true)
-  const [companion, setCompanion] = useState<CompanionMeta | null>(null)
-  const os = detectOs()
 
   useEffect(() => {
     void loadRecent()
-    void loadCompanion()
   }, [])
 
   async function loadRecent() {
@@ -58,11 +31,6 @@ export function HomePage() {
     const res = await api<{ items: RecentItem[] }>('/api/me/recent')
     if (res.ok) setRecent(res.data.items || [])
     setRecentLoading(false)
-  }
-
-  async function loadCompanion() {
-    const res = await api<CompanionMeta>('/api/companion/version')
-    if (res.ok) setCompanion(res.data)
   }
 
   function onSubmit(e: FormEvent) {
@@ -88,9 +56,6 @@ export function HomePage() {
     await api('/api/me/recent', { method: 'DELETE' })
     setRecent([])
   }
-
-  const winUrl = companion?.downloadUrl || '/companion/watchdesk-companion-setup.exe'
-  const linuxUrl = companion?.downloadUrlLinux || '/companion/watchdesk-companion.AppImage'
 
   return (
     <Pagina titulo="Início" descricao="Assista com o link de convite. Seu nome fica neste aparelho.">
@@ -118,73 +83,6 @@ export function HomePage() {
                 Assistir
               </Button>
             </form>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
-            <div>
-              <CardTitle>Companion</CardTitle>
-              <CardDescription>
-                App no PC do agente para transmitir a tela com controle remoto
-                {companion?.version ? ` (v${companion.version})` : ''}.
-              </CardDescription>
-            </div>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" aria-label="Como usar o companion">
-                  <CircleHelp />
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-md" showCloseButton>
-                <DialogHeader>
-                  <DialogTitle>Como usar o companion</DialogTitle>
-                  <DialogDescription>
-                    No PC do agente o app faz tudo: criar sala, copiar convite, transmitir e
-                    promover. Quem assiste usa só o navegador.
-                  </DialogDescription>
-                </DialogHeader>
-                <ol className="list-decimal space-y-2 pl-4 text-sm text-foreground">
-                  <li>Baixe o instalador do seu sistema (Windows ou Linux) neste card.</li>
-                  <li>
-                    Instale ou execute no PC do agente.
-                    <span className="block text-muted-foreground">
-                      Linux (AppImage):{' '}
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs">chmod +x</code> e rode.
-                      Precisa de <code className="rounded bg-muted px-1 py-0.5 text-xs">xdotool</code>.
-                    </span>
-                  </li>
-                  <li>
-                    No companion: informe a origem HTTPS e o nome → Entrar / sincronizar → Criar
-                    sala (se ainda não tiver).
-                  </li>
-                  <li>Copie o link do espectador e envie a quem vai assistir.</li>
-                  <li>Conectar e transmitir. Promova o piloto na lista do próprio app.</li>
-                  <li>
-                    O navegador no PC do agente é opcional (painel leve). Não compartilhe tela pelo
-                    browser junto com o companion.
-                  </li>
-                </ol>
-                {companion?.notes ? (
-                  <p className="text-sm text-muted-foreground">{companion.notes}</p>
-                ) : null}
-                <DialogFooter showCloseButton />
-              </DialogContent>
-            </Dialog>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            <Button asChild variant={os === 'windows' ? 'default' : 'outline'} className="sm:flex-1">
-              <a href={winUrl} download>
-                <Download />
-                Windows (.exe)
-              </a>
-            </Button>
-            <Button asChild variant={os === 'linux' ? 'default' : 'outline'} className="sm:flex-1">
-              <a href={linuxUrl} download>
-                <Download />
-                Linux (AppImage)
-              </a>
-            </Button>
           </CardContent>
         </Card>
 

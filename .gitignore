@@ -151,13 +151,6 @@ vite.config.ts.timestamp-*
 deploy/.env
 deploy/site
 deploy/.deploy-*.lock
-deploy/companion/*.AppImage
-deploy/companion/*.exe
-!deploy/companion/latest.json
-
-apps/companion/node_modules
-apps/companion/dist
-apps/companion/pnpm-lock.yaml
 
 bin/*.exe
 bin/ffmpeg

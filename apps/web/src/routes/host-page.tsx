@@ -20,13 +20,7 @@ import {
 import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
-import {
-  peerKey,
-  type ControlMode,
-  type RosterMember,
-  type SignalInbound,
-  type SignalOutbound,
-} from '@/lib/signal'
+import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
 
 const MAX_SLOTS = 8
 
@@ -58,19 +52,11 @@ export function HostPage() {
   const [viewerInvite, setViewerInvite] = useState('')
   const [hostInvite, setHostInvite] = useState('')
   const [newMax, setNewMax] = useState(8)
-  const [pilotPeerId, setPilotPeerId] = useState<string | null>(null)
-  const [transmitMode, setTransmitMode] = useState<'web' | 'companion'>('web')
-  const [companionPanel, setCompanionPanel] = useState(false)
-  const [companionMeta, setCompanionMeta] = useState<{
-    version: string
-    downloadUrl?: string
-    downloadUrlLinux?: string
-  } | null>(null)
 
-  const companionPanelRef = useRef(false)
+  const panelRef = useRef(false)
   const sharesRef = useRef(shares)
   sharesRef.current = shares
-  companionPanelRef.current = companionPanel
+  panelRef.current = panel
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
@@ -150,8 +136,6 @@ export function HostPage() {
     const pc = new RTCPeerConnection({ iceServers: iceRef.current })
     peersRef.current.set(key, { pc, peerId, slot })
     stream.getTracks().forEach((t) => pc.addTrack(t, stream))
-    // Canal para input remoto (companion injeta; web host ignora eventos).
-    pc.createDataChannel('watchdesk-input', { ordered: true })
 
     pc.onicecandidate = (ev) => {
       sendRef.current({
@@ -195,30 +179,9 @@ export function HostPage() {
       setActive(msg.active)
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
-      setPilotPeerId(msg.pilotPeerId ?? null)
-      setTransmitMode(msg.transmitMode || 'web')
-      setCompanionPanel(Boolean(msg.panel) || msg.transmitMode === 'companion')
-      if (msg.companion) setCompanionMeta(msg.companion)
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
-      // Painel não publica mídia — companion (ou este browser em modo web) transmite.
-      if (!msg.panel && msg.transmitMode !== 'companion') {
-        for (const [slot, share] of sharesRef.current) {
-          await offerAllViewers(slot, share.stream)
-        }
-      }
-      return
-    }
-    if (msg.type === 'host_role') {
-      setCompanionPanel(msg.role === 'panel')
-      if (msg.transmitMode) setTransmitMode(msg.transmitMode)
-      if (msg.role === 'panel') {
-        for (const key of [...peersRef.current.keys()]) closePeer(key)
-        for (const [, share] of sharesRef.current) {
-          share.stream.getTracks().forEach((t) => t.stop())
-        }
-        sharesRef.current = new Map()
-        setShares(new Map())
-        toast.message(msg.message || 'Companion transmitindo — este navegador é o painel.')
+      for (const [slot, share] of sharesRef.current) {
+        await offerAllViewers(slot, share.stream)
       }
       return
     }
@@ -231,10 +194,8 @@ export function HostPage() {
       setChatFeed((prev) =>
         appendSystem(prev, joinedLine(msg.displayName, 'viewer'), `join-${msg.peerId}`),
       )
-      if (!companionPanelRef.current && transmitMode !== 'companion') {
-        for (const [slot, share] of sharesRef.current) {
-          await ensurePeer(msg.peerId, slot, share.stream)
-        }
+      for (const [slot, share] of sharesRef.current) {
+        await ensurePeer(msg.peerId, slot, share.stream)
       }
       return
     }
@@ -298,23 +259,7 @@ export function HostPage() {
       setActive(msg.active)
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
-      return
     }
-    if (msg.type === 'control_changed') {
-      setPilotPeerId(msg.mode === 'interact' ? msg.peerId : null)
-      setRoster((prev) =>
-        prev.map((m) =>
-          m.peerId === msg.peerId ? { ...m, controlMode: msg.mode } : m.role === 'viewer' && msg.mode === 'interact' ? { ...m, controlMode: 'view' } : m,
-        ),
-      )
-      if (msg.mode === 'interact') {
-        toast.message(`${msg.displayName} pode interagir`)
-      }
-    }
-  }
-
-  function setViewerControl(peerId: string, mode: ControlMode) {
-    sendRef.current({ type: 'set_control', peerId, mode })
   }
 
   async function onEnter(e: FormEvent) {
@@ -486,15 +431,9 @@ export function HostPage() {
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           <header className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h1 className="text-xl font-semibold">
-                {transmitMode === 'companion' || companionPanel ? 'Painel' : 'Watch'} — {room}
-              </h1>
+              <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
               <p className="text-sm text-muted-foreground">
-                {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} · máx.{' '}
-                {maxViewers} espectadores
-                {transmitMode === 'companion' || companionPanel
-                  ? ' · Assist (companion)'
-                  : ' · Watch (só ver)'}
+                {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} · máx. {maxViewers} espectadores
               </p>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => void logout()}>
@@ -502,41 +441,9 @@ export function HostPage() {
             </Button>
           </header>
 
-          {transmitMode === 'companion' || companionPanel ? (
-            <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              Painel leve: o Companion está transmitindo. Aqui você ainda pode promover, chat e
-              segurança. Preferência: fazer isso no próprio app.
-            </p>
-          ) : (
-            <>
-              <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-                Controle remoto com mouse/teclado no desktop exige o{' '}
-                <a className="text-primary underline" href="/">
-                  Companion
-                </a>
-                . Compartilhar tela pelo browser é só visualização (sem injeção no SO).
-              </p>
-              <Button type="button" disabled={shares.size >= MAX_SLOTS} onClick={() => void shareScreen()}>
-                Compartilhar uma tela (só ver)
-              </Button>
-              {companionMeta ? (
-                <p className="text-sm text-muted-foreground">
-                  Baixar companion:{' '}
-                  <a className="text-primary underline" href={companionMeta.downloadUrl || '#'}>
-                    Windows
-                  </a>
-                  {' · '}
-                  <a
-                    className="text-primary underline"
-                    href={companionMeta.downloadUrlLinux || '/companion/watchdesk-companion.AppImage'}
-                  >
-                    Linux
-                  </a>
-                  {companionMeta.version ? ` (v${companionMeta.version})` : ''}.
-                </p>
-              ) : null}
-            </>
-          )}
+          <Button type="button" disabled={shares.size >= MAX_SLOTS} onClick={() => void shareScreen()}>
+            Compartilhar uma tela
+          </Button>
 
           <section>
             <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">No ar</h2>
@@ -566,57 +473,14 @@ export function HostPage() {
             <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Espectadores ({viewers.length}/{maxViewers})
             </h2>
-            {transmitMode === 'web' && !companionPanel ? (
-              <p className="text-sm text-muted-foreground">
-                Modo Watch (só ver): promover a interagir exige o Companion transmitindo. Baixe na
-                página Início.
-              </p>
-            ) : null}
             {!viewers.length ? (
               <p className="text-sm text-muted-foreground">Ninguém assistindo.</p>
             ) : (
               <>
-                <ul className="flex flex-col gap-2">
-                  {viewers.map((v) => {
-                    const interacting = v.controlMode === 'interact' || v.peerId === pilotPeerId
-                    const canAssist = transmitMode === 'companion' || companionPanel
-                    return (
-                      <li
-                        key={v.peerId}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
-                      >
-                        <span className="text-sm">
-                          {v.displayName}
-                          <span className="text-muted-foreground">
-                            {' '}
-                            · {interacting ? 'interagir' : 'só ver'}
-                          </span>
-                        </span>
-                        {canAssist ? (
-                          <div className="flex flex-wrap gap-1">
-                            {interacting ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setViewerControl(v.peerId, 'view')}
-                              >
-                                Só ver
-                              </Button>
-                            ) : (
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => setViewerControl(v.peerId, 'interact')}
-                              >
-                                Permitir interagir
-                              </Button>
-                            )}
-                          </div>
-                        ) : null}
-                      </li>
-                    )
-                  })}
+                <ul className="text-sm">
+                  {viewers.map((v) => (
+                    <li key={v.peerId}>{v.displayName}</li>
+                  ))}
                 </ul>
                 <Button type="button" variant="outline" size="sm" onClick={() => void kickAllViewers()}>
                   Remover todos

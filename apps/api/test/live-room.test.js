@@ -6,133 +6,56 @@ const {
   createTestRoom,
   mockWs,
   resolveHostJoin,
-  applyControlMode,
   roster,
-  canControlRoom,
-  seatOf,
+  detachClient,
 } = require('../src/live-room');
 
 describe('live-room resolveHostJoin', () => {
-  it('demote web host to panel when companion joins', () => {
+  it('kicks previous host when a new host joins', () => {
     const room = createTestRoom();
-    const webWs = mockWs();
+    const prevWs = mockWs();
     room.host = {
-      ws: webWs,
-      peerId: 'web1',
+      ws: prevWs,
+      peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
-      displayName: 'Web',
-      controlMode: 'view',
-      clientKind: 'web',
+      displayName: 'Host1',
     };
     room.slots.add(0);
 
-    const companionWs = mockWs();
     const result = resolveHostJoin(room, {
       sessionRole: 'host',
-      helloKind: 'companion',
-      incomingWs: companionWs,
+      incomingWs: mockWs(),
     });
 
-    assert.equal(result.joinAsPanel, false);
+    assert.equal(result.kicked, true);
     assert.equal(room.host, null);
-    assert.equal(room.panels.get('web1')?.role, 'panel');
     assert.equal(room.slots.size, 0);
-    assert.equal(webWs.msgs[0]?.type, 'host_role');
-    assert.equal(webWs.msgs[0]?.seat, 'controller');
+    assert.equal(prevWs.msgs[0]?.type, 'error');
+    assert.equal(prevWs.readyState, 3);
   });
 
-  it('web joins as panel while companion transmits', () => {
+  it('does nothing when same host reconnects on same ws', () => {
     const room = createTestRoom();
+    const ws = mockWs();
     room.host = {
-      ws: mockWs(),
-      peerId: 'comp1',
+      ws,
+      peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
-      displayName: 'App',
-      controlMode: 'view',
-      clientKind: 'companion',
-    };
-    room.transmitMode = 'companion';
-
-    const result = resolveHostJoin(room, {
-      sessionRole: 'host',
-      helloKind: 'web',
-      incomingWs: mockWs(),
-    });
-
-    assert.equal(result.joinAsPanel, true);
-    assert.equal(room.host.peerId, 'comp1');
-  });
-
-  it('second companion kicks first companion', () => {
-    const room = createTestRoom();
-    const first = mockWs();
-    room.host = {
-      ws: first,
-      peerId: 'c1',
-      role: 'host',
-      roomSlug: 'test',
-      displayName: 'C1',
-      controlMode: 'view',
-      clientKind: 'companion',
+      displayName: 'Host',
     };
 
     const result = resolveHostJoin(room, {
       sessionRole: 'host',
-      helloKind: 'companion',
-      incomingWs: mockWs(),
+      incomingWs: ws,
     });
 
-    assert.equal(result.joinAsPanel, false);
-    assert.equal(room.host, null);
-    assert.equal(first.msgs[0]?.type, 'error');
-    assert.equal(first.readyState, 3);
-  });
-});
-
-describe('live-room applyControlMode', () => {
-  it('blocks interact in Watch mode (web transmit)', () => {
-    const room = createTestRoom();
-    room.transmitMode = 'web';
-    room.viewers.set('v1', {
-      ws: mockWs(),
-      peerId: 'v1',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'Viewer',
-      controlMode: 'view',
-      clientKind: 'web',
-    });
-
-    const result = applyControlMode(room, 'v1', 'interact', { deviceId: 'd1', role: 'host' });
-    assert.equal(result.ok, false);
-    assert.match(result.message, /Assist/);
-    assert.equal(room.viewers.get('v1').controlMode, 'view');
+    assert.equal(result.kicked, false);
+    assert.equal(room.host.peerId, 'h1');
   });
 
-  it('allows interact in Assist mode (companion)', () => {
-    const room = createTestRoom();
-    room.transmitMode = 'companion';
-    room.viewers.set('v1', {
-      ws: mockWs(),
-      peerId: 'v1',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'Viewer',
-      controlMode: 'view',
-      clientKind: 'web',
-    });
-
-    const result = applyControlMode(room, 'v1', 'interact', { deviceId: 'd1', role: 'host' });
-    assert.equal(result.ok, true);
-    assert.equal(room.pilotPeerId, 'v1');
-    assert.equal(room.viewers.get('v1').controlMode, 'interact');
-  });
-});
-
-describe('live-room seats', () => {
-  it('roster exposes seat aliases', () => {
+  it('ignores viewer sessions', () => {
     const room = createTestRoom();
     room.host = {
       ws: mockWs(),
@@ -140,35 +63,75 @@ describe('live-room seats', () => {
       role: 'host',
       roomSlug: 'test',
       displayName: 'Host',
-      controlMode: 'view',
-      clientKind: 'companion',
     };
-    room.panels.set('p1', {
-      ws: mockWs(),
-      peerId: 'p1',
-      role: 'panel',
-      roomSlug: 'test',
-      displayName: 'Panel',
-      controlMode: 'view',
-      clientKind: 'web',
+
+    const result = resolveHostJoin(room, {
+      sessionRole: 'viewer',
+      incomingWs: mockWs(),
     });
+
+    assert.equal(result.kicked, false);
+    assert.equal(room.host.peerId, 'h1');
+  });
+});
+
+describe('live-room roster', () => {
+  it('lists host and viewers without seats or panels', () => {
+    const room = createTestRoom();
+    room.host = {
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'Host',
+    };
     room.viewers.set('v1', {
       ws: mockWs(),
       peerId: 'v1',
       role: 'viewer',
       roomSlug: 'test',
       displayName: 'V',
-      controlMode: 'view',
-      clientKind: 'web',
     });
 
     const members = roster(room);
-    assert.equal(members.find((m) => m.peerId === 'h1').seat, 'transmitter');
-    assert.equal(members.find((m) => m.peerId === 'p1').seat, 'controller');
-    assert.equal(members.find((m) => m.peerId === 'v1').seat, 'viewer');
-    assert.equal(seatOf(room.host), 'transmitter');
-    assert.equal(canControlRoom(room.host), true);
-    assert.equal(canControlRoom(room.panels.get('p1')), true);
-    assert.equal(canControlRoom(room.viewers.get('v1')), false);
+    assert.deepEqual(
+      members.map((m) => ({ peerId: m.peerId, role: m.role })),
+      [
+        { peerId: 'h1', role: 'host' },
+        { peerId: 'v1', role: 'viewer' },
+      ],
+    );
+    assert.equal(members.every((m) => m.seat === undefined), true);
+  });
+});
+
+describe('live-room detachClient', () => {
+  it('clears host and notifies viewers', () => {
+    const live = new Map();
+    const room = createTestRoom();
+    live.set('test', room);
+    const viewerWs = mockWs();
+    const host = {
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'Host',
+    };
+    room.host = host;
+    room.slots.add(0);
+    room.viewers.set('v1', {
+      ws: viewerWs,
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+    });
+
+    detachClient(live, host);
+
+    assert.equal(room.host, null);
+    assert.equal(room.slots.size, 0);
+    assert.equal(viewerWs.msgs.some((m) => m.type === 'host_left'), true);
   });
 });

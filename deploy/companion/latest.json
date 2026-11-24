@@ -1,8 +1,0 @@
-{
-  "version": "0.2.0",
-  "minVersion": "0.1.0",
-  "downloadUrl": "/companion/watchdesk-companion-setup.exe",
-  "downloadUrlLinux": "/companion/watchdesk-companion.AppImage",
-  "notes": "0.2: console do host no app (salas, convite, promover). Linux: xdotool. Deep link watchdesk://",
-  "mandatory": false
-}

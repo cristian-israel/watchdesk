@@ -2,7 +2,5 @@ packages:
   - apps/api
   - apps/web
 
-# Companion Electron fica em apps/companion (install separado: cd apps/companion && pnpm install)
-
 allowBuilds:
   esbuild: true

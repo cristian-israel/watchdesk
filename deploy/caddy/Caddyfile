@@ -8,13 +8,6 @@
 		import /etc/caddy/upstream.caddy
 	}
 
-	# Artefatos do companion (latest.json + instalador) em /srv/companion
-	handle /companion/* {
-		root * /srv/companion
-		uri strip_prefix /companion
-		file_server
-	}
-
 	handle {
 		root * /opt/atual
 		try_files {path} /index.html

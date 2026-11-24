@@ -122,7 +122,7 @@ function forwardedHost(req) {
  */
 function originAllowed(req, publicHost = '') {
   const origin = String(req.headers.origin || '');
-  // Sem Origin, ou companion Electron (file:// / Origin null).
+  // Sem Origin (ex.: clientes sem header).
   if (!origin || origin === 'null') return true;
   let hostname;
   try {

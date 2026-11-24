@@ -11,7 +11,6 @@ const http = require('http');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { initDb, getPool, healthCheck } = require('./db');
-const { companionLatest, cmpSemver } = require('./companion-version');
 const liveRoom = require('./live-room');
 const {
   ROOM_RE,
@@ -95,8 +94,6 @@ function ensureLive(row) {
   return liveRoom.ensureLive(live, row);
 }
 
-const canControlRoom = liveRoom.canControlRoom;
-
 async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
   if (!deviceId || !slug) return;
   await getPool().query(
@@ -135,20 +132,6 @@ async function listRecentRooms(deviceId) {
     lastSeenAt: r.lastSeenAt,
   }));
 }
-
-async function insertControlAudit(roomId, hostDeviceId, peerId, displayName, mode) {
-  try {
-    await getPool().query(
-      `INSERT INTO control_audit (room_id, host_device_id, target_peer_id, target_display_name, mode)
-       VALUES (?, ?, ?, ?, ?)`,
-      [roomId, hostDeviceId || null, peerId, String(displayName || '').slice(0, 80), mode],
-    );
-  } catch (e) {
-    console.error('control_audit', e);
-  }
-}
-
-const controlModeOf = liveRoom.controlModeOf;
 
 const { blocked, noteFailure } = createRateLimiter();
 
@@ -291,7 +274,6 @@ async function renameDevice(deviceId, displayName) {
       }
     };
     touch(room.host);
-    for (const p of room.panels?.values() || []) touch(p);
     for (const viewer of room.viewers.values()) touch(viewer);
     if (changed) broadcastRoom(room, { type: 'roster', members: roster(room) });
   }
@@ -309,7 +291,6 @@ function dropLiveRoom(slug, message) {
     }
   };
   if (rt.host) closeOne(rt.host);
-  for (const p of rt.panels?.values() || []) closeOne(p);
   for (const viewer of rt.viewers.values()) closeOne(viewer);
   live.delete(slug);
 }
@@ -419,15 +400,6 @@ const slotList = liveRoom.slotList;
 const roster = liveRoom.roster;
 const broadcastRoom = liveRoom.broadcastRoom;
 const findClient = liveRoom.findClient;
-const clearMediaSlots = liveRoom.clearMediaSlots;
-
-function applyControlMode(room, peerId, mode, hostClient) {
-  return liveRoom.applyControlMode(room, peerId, mode, hostClient, {
-    onAudit: (roomId, deviceId, peer, name, m) => {
-      void insertControlAudit(roomId, deviceId, peer, name, m);
-    },
-  });
-}
 
 function detachClient(client) {
   liveRoom.detachClient(live, client);
@@ -466,79 +438,48 @@ async function handleHello(ws, req, ip) {
   }
 
   const peerId = crypto.randomBytes(8).toString('hex');
-  const helloKind = ws.watchdeskHelloKind === 'companion' ? 'companion' : 'web';
-  const companionVersion = String(ws.watchdeskCompanionVersion || '');
 
-  const { joinAsPanel } = liveRoom.resolveHostJoin(room, {
+  liveRoom.resolveHostJoin(room, {
     sessionRole: session.role,
-    helloKind,
     incomingWs: ws,
   });
 
   const client = {
     ws,
     peerId,
-    role: joinAsPanel ? 'panel' : session.role,
+    role: session.role,
     roomSlug: session.slug,
     displayName: session.display_name,
     sessionId: session.id,
     deviceId: session.device_id || '',
-    controlMode: 'view',
-    clientKind: session.role === 'host' ? helloKind : 'web',
-    companionVersion,
   };
   ws.watchdeskClient = client;
 
-  if (joinAsPanel) {
-    room.panels.set(peerId, client);
-  } else if (session.role === 'host') {
-    if (helloKind === 'companion') {
-      const latest = companionLatest();
-      if (companionVersion && cmpSemver(companionVersion, latest.minVersion) < 0 && latest.mandatory) {
-        wsSend(ws, {
-          type: 'error',
-          message: `Companion desatualizado (mínimo ${latest.minVersion}). Atualize para transmitir.`,
-        });
-        ws.close();
-        return;
-      }
-      room.transmitMode = 'companion';
-    } else {
-      room.transmitMode = 'web';
-    }
+  if (session.role === 'host') {
     room.host = client;
   } else {
     room.viewers.set(peerId, client);
   }
 
   const history = await loadChat(room.roomDbId);
-  const latest = companionLatest();
-  const asController = canControlRoom(client);
-  const seat = liveRoom.seatOf(client);
 
   wsSend(ws, {
     type: 'welcome',
     peerId,
-    role: joinAsPanel ? 'host' : session.role,
-    seat,
-    panel: joinAsPanel || client.role === 'panel',
+    role: session.role,
     room: session.slug,
     displayName: session.display_name,
     slots: slotList(room),
-    viewers: asController
-      ? [...room.viewers.values()].map((v) => ({
-          peerId: v.peerId,
-          displayName: v.displayName,
-          controlMode: controlModeOf(v),
-        }))
-      : undefined,
+    viewers:
+      session.role === 'host'
+        ? [...room.viewers.values()].map((v) => ({
+            peerId: v.peerId,
+            displayName: v.displayName,
+          }))
+        : undefined,
     iceServers: iceServers(peerId),
     maxViewers: room.maxViewers,
     active: room.active,
-    controlMode: session.role === 'viewer' ? 'view' : undefined,
-    pilotPeerId: room.pilotPeerId,
-    transmitMode: room.transmitMode,
-    companion: asController ? latest : undefined,
   });
   wsSend(ws, { type: 'chat_history', messages: history });
   broadcastRoom(room, { type: 'roster', members: roster(room) });
@@ -552,7 +493,7 @@ async function handleHello(ws, req, ip) {
   } else if (client.role === 'viewer') {
     broadcastRoom(
       room,
-      { type: 'viewer_joined', peerId, displayName: session.display_name, controlMode: 'view' },
+      { type: 'viewer_joined', peerId, displayName: session.display_name },
       peerId,
     );
     if (client.deviceId) {
@@ -565,15 +506,6 @@ function handleSignal(client, msg) {
   const room = live.get(client.roomSlug);
   if (!room) return;
 
-  if (canControlRoom(client) && msg.type === 'set_control') {
-    const peerId = String(msg.peerId || '');
-    const mode = msg.mode === 'interact' ? 'interact' : 'view';
-    const result = applyControlMode(room, peerId, mode, client);
-    if (!result.ok) wsSend(client.ws, { type: 'error', message: result.message });
-    return;
-  }
-
-  // Só o host de mídia (companion/web transmitter) mexe em slots.
   if (client.role === 'host' && (msg.type === 'slot_add' || msg.type === 'slot_remove')) {
     const slot = Number(msg.slot);
     if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) return;
@@ -589,11 +521,10 @@ function handleSignal(client, msg) {
       const body = String(msg.body || '').trim().slice(0, CHAT_MAX);
       if (!body) return;
       try {
-        const chatRole = client.role === 'panel' ? 'host' : client.role;
         const saved = await insertChat(
           room.roomDbId,
           client.displayName,
-          chatRole,
+          client.role,
           body,
           client.deviceId,
         );
@@ -678,8 +609,6 @@ function attachWs(server) {
 
       if (msg.type === 'hello') {
         if (ws.watchdeskClient) return;
-        ws.watchdeskHelloKind = msg.clientKind === 'companion' ? 'companion' : 'web';
-        ws.watchdeskCompanionVersion = String(msg.version || '');
         void handleHello(ws, req, ip);
         return;
       }
@@ -719,16 +648,10 @@ const handler = async (req, res) => {
     pathname === '/api/me/recent' ||
     pathname === '/api/session' ||
     pathname === '/api/logout' ||
-    pathname === '/api/ice' ||
-    pathname === '/api/companion/version';
+    pathname === '/api/ice';
 
   if (needsRate && blocked(ip)) {
     return send(res, 429, 'Muitas tentativas. Aguarde 1 minuto.', { 'Retry-After': '60' });
-  }
-
-  // GET /api/companion/version — latest companion build (LAN)
-  if (req.method === 'GET' && pathname === '/api/companion/version') {
-    return sendJson(res, 200, companionLatest());
   }
 
   // GET /api/me/recent
@@ -942,7 +865,6 @@ const handler = async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         ...sessionPayload({ ...row, role: 'viewer', display_name: displayName }),
-        controlMode: 'view',
       });
     } catch (e) {
       console.error(e);
