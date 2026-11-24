@@ -14,13 +14,8 @@ const { initDb, getPool, healthCheck } = require('./db');
 const liveRoom = require('./live-room');
 const {
   ROOM_RE,
-  KEY_MIN_CREATE,
-  KEY_MIN_LOGIN,
   WS_MAX_PAYLOAD,
-  shaHex,
-  hashEqHex,
   normalizeName,
-  validateKey,
   isDeviceId,
   clientIp,
   parseCookies,
@@ -94,16 +89,15 @@ function ensureLive(row) {
   return liveRoom.ensureLive(live, row);
 }
 
-async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
+async function touchRecentRoom(deviceId, slug, label) {
   if (!deviceId || !slug) return;
   await getPool().query(
-    `INSERT INTO recent_rooms (device_id, room_slug, room_label, viewer_invite, last_seen_at)
-     VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))
+    `INSERT INTO recent_rooms (device_id, room_slug, room_label, last_seen_at)
+     VALUES (?, ?, ?, UTC_TIMESTAMP(3))
      ON DUPLICATE KEY UPDATE
        room_label = VALUES(room_label),
-       viewer_invite = IF(VALUES(viewer_invite) = '', viewer_invite, VALUES(viewer_invite)),
        last_seen_at = VALUES(last_seen_at)`,
-    [deviceId, slug, String(label || '').slice(0, 80), String(viewerInvite || '').slice(0, 128)],
+    [deviceId, slug, String(label || '').slice(0, 80)],
   );
   const [rows] = await getPool().query(
     `SELECT room_slug FROM recent_rooms WHERE device_id = ? ORDER BY last_seen_at DESC`,
@@ -121,14 +115,13 @@ async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
 
 async function listRecentRooms(deviceId) {
   const [rows] = await getPool().query(
-    `SELECT room_slug AS slug, room_label AS label, viewer_invite AS viewerInvite, last_seen_at AS lastSeenAt
+    `SELECT room_slug AS slug, room_label AS label, last_seen_at AS lastSeenAt
      FROM recent_rooms WHERE device_id = ? ORDER BY last_seen_at DESC LIMIT ?`,
     [deviceId, RECENT_LIMIT],
   );
   return rows.map((r) => ({
     slug: r.slug,
     label: r.label || '',
-    viewerInvite: r.viewerInvite || '',
     lastSeenAt: r.lastSeenAt,
   }));
 }
@@ -172,19 +165,13 @@ function randomSlug() {
   return crypto.randomBytes(9).toString('base64url').slice(0, 12);
 }
 
-function randomKey() {
-  return crypto.randomBytes(18).toString('base64url');
-}
-
-function salaPath(slug, viewerInvite) {
-  const base = `/sala/${slug}`;
-  if (!viewerInvite) return base;
-  return `${base}#k=${encodeURIComponent(viewerInvite)}`;
-}
-
 /** Path relativo — o front monta a URL com location.origin (padrão frontier/alias). */
-function viewerLinks(slug, viewerInvite = '') {
-  return [salaPath(slug, viewerInvite)];
+function viewerLinks(slug) {
+  return [`/sala/${slug}`];
+}
+
+function normalizeJoinMode(value) {
+  return value === 'open' ? 'open' : 'ask';
 }
 
 function iceServers(userId = 'anon') {
@@ -207,9 +194,12 @@ async function findRoomBySlug(slug) {
   return rows[0] || null;
 }
 
-async function findRoomByDevice(deviceId) {
-  const [rows] = await getPool().query('SELECT * FROM rooms WHERE device_id = ? LIMIT 1', [deviceId]);
-  return rows[0] || null;
+async function listRoomsByDevice(deviceId) {
+  const [rows] = await getPool().query(
+    'SELECT * FROM rooms WHERE device_id = ? ORDER BY updated_at DESC',
+    [deviceId],
+  );
+  return rows;
 }
 
 function roomSummary(row) {
@@ -217,17 +207,16 @@ function roomSummary(row) {
     slug: row.slug,
     active: Boolean(row.active),
     maxViewers: row.max_viewers,
-    links: viewerLinks(row.slug, row.viewer_invite),
-    viewerInvite: row.viewer_invite || '',
-    hostInvite: row.host_invite || '',
+    joinMode: normalizeJoinMode(row.join_mode),
+    links: viewerLinks(row.slug),
   };
 }
 
-function mePayload(device, room) {
+function mePayload(device, rooms) {
   return {
     deviceId: device.id,
     displayName: device.display_name || '',
-    room: room ? roomSummary(room) : null,
+    rooms: (rooms || []).map(roomSummary),
   };
 }
 
@@ -275,6 +264,7 @@ async function renameDevice(deviceId, displayName) {
     };
     touch(room.host);
     for (const viewer of room.viewers.values()) touch(viewer);
+    for (const pending of room.pending.values()) touch(pending);
     if (changed) broadcastRoom(room, { type: 'roster', members: roster(room) });
   }
 }
@@ -292,6 +282,7 @@ function dropLiveRoom(slug, message) {
   };
   if (rt.host) closeOne(rt.host);
   for (const viewer of rt.viewers.values()) closeOne(viewer);
+  for (const pending of rt.pending.values()) closeOne(pending);
   live.delete(slug);
 }
 
@@ -315,7 +306,7 @@ async function createSession(roomId, role, displayName, deviceId) {
 async function getSession(token) {
   if (!token || token.length < 16) return null;
   const [rows] = await getPool().query(
-    `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.viewer_invite, r.host_invite
+    `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.join_mode, r.device_id AS room_device_id
      FROM sessions s
      JOIN rooms r ON r.id = s.room_id
      WHERE s.id = ? AND s.expires_at > UTC_TIMESTAMP(3)
@@ -378,19 +369,15 @@ async function insertChat(roomId, authorName, role, body, deviceId) {
 }
 
 function sessionPayload(row) {
-  const payload = {
+  return {
     room: row.slug,
     role: row.role,
     displayName: row.display_name,
     active: Boolean(row.active),
     maxViewers: row.max_viewers,
-    links: viewerLinks(row.slug, row.role === 'host' ? row.viewer_invite : ''),
+    joinMode: normalizeJoinMode(row.join_mode),
+    links: viewerLinks(row.slug),
   };
-  if (row.role === 'host') {
-    payload.viewerInvite = row.viewer_invite || '';
-    payload.hostInvite = row.host_invite || '';
-  }
-  return payload;
 }
 
 // ----------------------------------------------------------------- WebSocket
@@ -398,6 +385,7 @@ function sessionPayload(row) {
 const wsSend = liveRoom.wsSend;
 const slotList = liveRoom.slotList;
 const roster = liveRoom.roster;
+const pendingList = liveRoom.pendingList;
 const broadcastRoom = liveRoom.broadcastRoom;
 const findClient = liveRoom.findClient;
 
@@ -430,8 +418,13 @@ async function handleHello(ws, req, ip) {
   }
 
   const room = ensureLive(roomRow);
+  const deviceId = session.device_id || '';
+  const joinMode = room.joinMode;
+  const alreadyAdmitted =
+    session.role === 'viewer' &&
+    (joinMode === 'open' || (deviceId && room.admittedDevices.has(deviceId)));
 
-  if (session.role === 'viewer' && room.viewers.size >= room.maxViewers) {
+  if (session.role === 'viewer' && alreadyAdmitted && room.viewers.size >= room.maxViewers) {
     wsSend(ws, { type: 'error', message: 'Sala cheia.' });
     ws.close();
     return;
@@ -444,21 +437,26 @@ async function handleHello(ws, req, ip) {
     incomingWs: ws,
   });
 
+  const asPending = session.role === 'viewer' && joinMode === 'ask' && !alreadyAdmitted;
+
   const client = {
     ws,
     peerId,
-    role: session.role,
+    role: asPending ? 'pending' : session.role,
     roomSlug: session.slug,
     displayName: session.display_name,
     sessionId: session.id,
-    deviceId: session.device_id || '',
+    deviceId,
   };
   ws.watchdeskClient = client;
 
   if (session.role === 'host') {
     room.host = client;
+  } else if (asPending) {
+    room.pending.set(peerId, client);
   } else {
     room.viewers.set(peerId, client);
+    if (deviceId) room.admittedDevices.add(deviceId);
   }
 
   const history = await loadChat(room.roomDbId);
@@ -469,7 +467,7 @@ async function handleHello(ws, req, ip) {
     role: session.role,
     room: session.slug,
     displayName: session.display_name,
-    slots: slotList(room),
+    slots: asPending ? [] : slotList(room),
     viewers:
       session.role === 'host'
         ? [...room.viewers.values()].map((v) => ({
@@ -477,27 +475,43 @@ async function handleHello(ws, req, ip) {
             displayName: v.displayName,
           }))
         : undefined,
+    pending: session.role === 'host' ? pendingList(room) : undefined,
     iceServers: iceServers(peerId),
     maxViewers: room.maxViewers,
     active: room.active,
+    joinMode,
+    admitStatus: asPending ? 'pending' : session.role === 'viewer' ? 'admitted' : undefined,
   });
-  wsSend(ws, { type: 'chat_history', messages: history });
-  broadcastRoom(room, { type: 'roster', members: roster(room) });
+
+  if (!asPending) {
+    wsSend(ws, { type: 'chat_history', messages: history });
+  }
 
   if (client.role === 'host') {
+    broadcastRoom(room, { type: 'roster', members: roster(room) });
     broadcastRoom(
       room,
       { type: 'host_joined', peerId, displayName: session.display_name },
       peerId,
     );
+  } else if (client.role === 'pending') {
+    if (room.host) {
+      wsSend(room.host.ws, {
+        type: 'admit_request',
+        peerId,
+        displayName: session.display_name,
+      });
+      wsSend(room.host.ws, { type: 'pending', pending: pendingList(room) });
+    }
   } else if (client.role === 'viewer') {
+    broadcastRoom(room, { type: 'roster', members: roster(room) });
     broadcastRoom(
       room,
       { type: 'viewer_joined', peerId, displayName: session.display_name },
       peerId,
     );
     if (client.deviceId) {
-      void touchRecentRoom(client.deviceId, session.slug, roomRow.creator_name || session.slug, '');
+      void touchRecentRoom(client.deviceId, session.slug, roomRow.creator_name || session.slug);
     }
   }
 }
@@ -505,6 +519,31 @@ async function handleHello(ws, req, ip) {
 function handleSignal(client, msg) {
   const room = live.get(client.roomSlug);
   if (!room) return;
+
+  if (client.role === 'host' && msg.type === 'admit') {
+    const peerId = String(msg.peerId || '');
+    const accept = Boolean(msg.accept);
+    const result = accept
+      ? liveRoom.promotePending(room, peerId)
+      : liveRoom.denyPending(room, peerId);
+    if (!result.ok) {
+      wsSend(client.ws, { type: 'error', message: result.message });
+      return;
+    }
+    if (accept) {
+      if (result.client?.deviceId) {
+        void touchRecentRoom(result.client.deviceId, room.slug, room.slug);
+      }
+      void loadChat(room.roomDbId).then((messages) => {
+        if (result.client) wsSend(result.client.ws, { type: 'chat_history', messages });
+      });
+    } else if (result.client?.sessionId) {
+      void deleteSession(result.client.sessionId);
+    }
+    return;
+  }
+
+  if (client.role === 'pending') return;
 
   if (client.role === 'host' && (msg.type === 'slot_add' || msg.type === 'slot_remove')) {
     const slot = Number(msg.slot);
@@ -517,6 +556,7 @@ function handleSignal(client, msg) {
   }
 
   if (msg.type === 'chat') {
+    if (client.role !== 'host' && client.role !== 'viewer') return;
     void (async () => {
       const body = String(msg.body || '').trim().slice(0, CHAT_MAX);
       if (!body) return;
@@ -539,7 +579,7 @@ function handleSignal(client, msg) {
   if (!['offer', 'answer', 'ice'].includes(msg.type)) return;
   const to = String(msg.to || '');
   const target = findClient(room, to);
-  if (!target) return;
+  if (!target || target.role === 'pending') return;
 
   const okPair =
     (client.role === 'host' && target.role === 'viewer') ||
@@ -644,7 +684,7 @@ const handler = async (req, res) => {
   const needsRate =
     pathname.startsWith('/api/rooms') ||
     pathname === '/api/me' ||
-    pathname === '/api/me/room' ||
+    pathname === '/api/me/rooms' ||
     pathname === '/api/me/recent' ||
     pathname === '/api/session' ||
     pathname === '/api/logout' ||
@@ -687,8 +727,15 @@ const handler = async (req, res) => {
   // GET /api/me
   if (req.method === 'GET' && pathname === '/api/me') {
     const device = await ensureDevice(req, res);
-    const room = await findRoomByDevice(device.id);
-    return sendJson(res, 200, mePayload(device, room));
+    const rooms = await listRoomsByDevice(device.id);
+    return sendJson(res, 200, mePayload(device, rooms));
+  }
+
+  // GET /api/me/rooms
+  if (req.method === 'GET' && pathname === '/api/me/rooms') {
+    const device = await ensureDevice(req, res);
+    const rooms = await listRoomsByDevice(device.id);
+    return sendJson(res, 200, { rooms: rooms.map(roomSummary) });
   }
 
   // PATCH /api/me
@@ -699,26 +746,15 @@ const handler = async (req, res) => {
       const displayName = normalizeName(body.displayName);
       if (!displayName) return send(res, 400, 'Informe seu nome.');
       await renameDevice(device.id, displayName);
-      const room = await findRoomByDevice(device.id);
-      return sendJson(res, 200, mePayload({ ...device, display_name: displayName }, room));
+      const rooms = await listRoomsByDevice(device.id);
+      return sendJson(res, 200, mePayload({ ...device, display_name: displayName }, rooms));
     } catch (e) {
       console.error(e);
       return send(res, 400, 'Não foi possível salvar o nome.');
     }
   }
 
-  // DELETE /api/me/room
-  if (req.method === 'DELETE' && pathname === '/api/me/room') {
-    const device = await ensureDevice(req, res);
-    const room = await findRoomByDevice(device.id);
-    if (room) {
-      await getPool().query('DELETE FROM rooms WHERE id = ? AND device_id = ?', [room.id, device.id]);
-      dropLiveRoom(room.slug, 'Sala excluída.');
-    }
-    return sendJson(res, 200, { ok: true, ...mePayload(device, null) });
-  }
-
-  // POST /api/rooms — create (slug e chaves gerados no servidor)
+  // POST /api/rooms — cria + sessão host
   if (req.method === 'POST' && pathname === '/api/rooms') {
     try {
       const device = await ensureDevice(req, res);
@@ -726,14 +762,10 @@ const handler = async (req, res) => {
       const displayName = device.display_name || '';
       let maxViewers = Number(body.maxViewers ?? 8);
       if (!Number.isInteger(maxViewers) || maxViewers < 1 || maxViewers > 8) maxViewers = 8;
+      const joinMode = normalizeJoinMode(body.joinMode);
 
       if (!displayName) return send(res, 400, 'Informe seu nome.');
 
-      const owned = await findRoomByDevice(device.id);
-      if (owned) return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
-
-      const hostKey = randomKey();
-      const viewerKey = randomKey();
       let slug = '';
       let roomId = 0;
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -742,29 +774,14 @@ const handler = async (req, res) => {
         try {
           const [ins] = await getPool().query(
             `INSERT INTO rooms
-              (slug, host_key_hash, viewer_key_hash, host_invite, viewer_invite, creator_name, max_viewers, active, device_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-            [
-              slug,
-              shaHex(hostKey),
-              shaHex(viewerKey),
-              hostKey,
-              viewerKey,
-              displayName,
-              maxViewers,
-              device.id,
-            ],
+              (slug, device_id, creator_name, join_mode, max_viewers, active)
+             VALUES (?, ?, ?, ?, ?, 1)`,
+            [slug, device.id, displayName, joinMode, maxViewers],
           );
           roomId = ins.insertId;
           break;
         } catch (e) {
-          if (e && e.code === 'ER_DUP_ENTRY') {
-            const dup = String(e.message || '');
-            if (dup.includes('uq_rooms_device') || dup.includes('device_id')) {
-              return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
-            }
-            continue;
-          }
+          if (e && e.code === 'ER_DUP_ENTRY') continue;
           throw e;
         }
       }
@@ -774,15 +791,12 @@ const handler = async (req, res) => {
       setSessionCookie(res, sess.id, req);
       const row = await findRoomBySlug(slug);
       ensureLive(row);
-      return sendJson(res, 201, { ok: true, ...sessionPayload({ ...row, role: 'host', display_name: displayName }) });
+      return sendJson(res, 201, {
+        ok: true,
+        ...sessionPayload({ ...row, role: 'host', display_name: displayName }),
+      });
     } catch (e) {
-      if (e && e.code === 'ER_DUP_ENTRY') {
-        const dup = String(e.message || '');
-        if (dup.includes('uq_rooms_device') || dup.includes('device_id')) {
-          return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
-        }
-        return send(res, 409, 'Sala já existe.');
-      }
+      if (e && e.code === 'ER_DUP_ENTRY') return send(res, 409, 'Sala já existe.');
       console.error(e);
       return send(res, 500, 'Erro ao criar sala');
     }
@@ -798,29 +812,23 @@ const handler = async (req, res) => {
       slug: row.slug,
       active: Boolean(row.active),
       maxViewers: row.max_viewers,
+      joinMode: normalizeJoinMode(row.join_mode),
     });
   }
 
-  // POST /api/rooms/:slug/host
-  const roomHost = pathname.match(/^\/api\/rooms\/([a-zA-Z0-9_-]{1,40})\/host$/);
-  if (req.method === 'POST' && roomHost) {
+  // POST /api/rooms/:slug/resume — dono retoma como host
+  const roomResume = pathname.match(/^\/api\/rooms\/([a-zA-Z0-9_-]{1,40})\/resume$/);
+  if (req.method === 'POST' && roomResume) {
     try {
       const device = await ensureDevice(req, res);
-      const body = await readJson(req);
-      const slug = roomHost[1];
+      const slug = roomResume[1];
       const displayName = device.display_name || '';
-      const hostKey = body.hostKey || '';
       if (!displayName) return send(res, 400, 'Informe seu nome.');
 
       const row = await findRoomBySlug(slug);
       if (!row) return send(res, 404, 'Sala não encontrada.');
-      const owner = Boolean(row.device_id) && row.device_id === device.id;
-      if (!owner) {
-        if (!validateKey(hostKey, KEY_MIN_LOGIN)) return send(res, 400, 'Chave do host inválida.');
-        if (!hashEqHex(row.host_key_hash, shaHex(hostKey))) {
-          noteFailure(ip);
-          return send(res, 401, 'Chave do host incorreta.');
-        }
+      if (row.device_id !== device.id) {
+        return send(res, 403, 'Só o aparelho que criou a sala pode transmitir.');
       }
 
       const sess = await createSession(row.id, 'host', displayName, device.id);
@@ -836,40 +844,53 @@ const handler = async (req, res) => {
     }
   }
 
-  // POST /api/rooms/:slug/viewer
+  // POST /api/rooms/:slug/viewer — link only
   const roomViewer = pathname.match(/^\/api\/rooms\/([a-zA-Z0-9_-]{1,40})\/viewer$/);
   if (req.method === 'POST' && roomViewer) {
     try {
       const device = await ensureDevice(req, res);
-      const body = await readJson(req);
       const slug = roomViewer[1];
       const displayName = device.display_name || '';
-      const viewerKey = body.viewerKey || '';
       if (!displayName) return send(res, 400, 'Informe seu nome.');
-      if (!validateKey(viewerKey, KEY_MIN_LOGIN)) return send(res, 400, 'Chave inválida.');
 
       const row = await findRoomBySlug(slug);
       if (!row) return send(res, 404, 'Sala não encontrada.');
       if (!row.active) return send(res, 403, 'Sala desativada.');
-      if (!hashEqHex(row.viewer_key_hash, shaHex(viewerKey))) {
-        noteFailure(ip);
-        return send(res, 401, 'Chave incorreta.');
-      }
 
       const rt = ensureLive(row);
-      if (rt.viewers.size >= rt.maxViewers) return send(res, 403, 'Sala cheia.');
+      const joinMode = normalizeJoinMode(row.join_mode);
+      if (joinMode === 'open' && rt.viewers.size >= rt.maxViewers) {
+        return send(res, 403, 'Sala cheia.');
+      }
 
       const sess = await createSession(row.id, 'viewer', displayName, device.id);
       setSessionCookie(res, sess.id, req);
-      await touchRecentRoom(device.id, slug, row.creator_name || slug, viewerKey);
+      if (joinMode === 'open') {
+        await touchRecentRoom(device.id, slug, row.creator_name || slug);
+      }
       return sendJson(res, 200, {
         ok: true,
+        status: joinMode === 'ask' ? 'pending' : 'admitted',
         ...sessionPayload({ ...row, role: 'viewer', display_name: displayName }),
       });
     } catch (e) {
       console.error(e);
       return send(res, 500, 'Erro ao entrar');
     }
+  }
+
+  // DELETE /api/rooms/:slug
+  const roomDelete = pathname.match(/^\/api\/rooms\/([a-zA-Z0-9_-]{1,40})$/);
+  if (req.method === 'DELETE' && roomDelete) {
+    const device = await ensureDevice(req, res);
+    const slug = roomDelete[1];
+    const row = await findRoomBySlug(slug);
+    if (!row) return send(res, 404, 'Sala não encontrada.');
+    if (row.device_id !== device.id) return send(res, 403, 'Só o dono pode excluir a sala.');
+    await getPool().query('DELETE FROM rooms WHERE id = ? AND device_id = ?', [row.id, device.id]);
+    dropLiveRoom(slug, 'Sala excluída.');
+    const rooms = await listRoomsByDevice(device.id);
+    return sendJson(res, 200, { ok: true, ...mePayload(device, rooms) });
   }
 
   // POST /api/rooms/:slug/kick-viewers
@@ -915,8 +936,6 @@ const handler = async (req, res) => {
 
       const updates = [];
       const params = [];
-      let viewerKeyChanged = false;
-      let hostKeyChanged = false;
 
       if (typeof body.active === 'boolean') {
         updates.push('active = ?');
@@ -928,17 +947,9 @@ const handler = async (req, res) => {
         updates.push('max_viewers = ?');
         params.push(mv);
       }
-      if (body.regenerateHostKey === true) {
-        const hostKey = randomKey();
-        updates.push('host_key_hash = ?', 'host_invite = ?');
-        params.push(shaHex(hostKey), hostKey);
-        hostKeyChanged = true;
-      }
-      if (body.regenerateViewerKey === true) {
-        const viewerKey = randomKey();
-        updates.push('viewer_key_hash = ?', 'viewer_invite = ?');
-        params.push(shaHex(viewerKey), viewerKey);
-        viewerKeyChanged = true;
+      if (body.joinMode !== undefined) {
+        updates.push('join_mode = ?');
+        params.push(normalizeJoinMode(body.joinMode));
       }
 
       if (!updates.length) return send(res, 400, 'Nada para atualizar.');
@@ -946,40 +957,22 @@ const handler = async (req, res) => {
       params.push(row.id);
       await getPool().query(`UPDATE rooms SET ${updates.join(', ')} WHERE id = ?`, params);
 
-      if (hostKeyChanged) {
-        await deleteSessionsByRole(row.id, 'host', session.id);
-      }
-      if (viewerKeyChanged) {
-        await deleteSessionsByRole(row.id, 'viewer');
-        const rt = live.get(slug);
-        if (rt) {
-          kickRole(rt, 'viewer', 'Chave dos espectadores alterada. Entre novamente.');
-        }
-      }
-
       const updated = await findRoomBySlug(slug);
       const rt = ensureLive(updated);
       broadcastRoom(rt, {
         type: 'room_updated',
         active: rt.active,
         maxViewers: rt.maxViewers,
+        joinMode: rt.joinMode,
       });
-
-      let message = 'Sala atualizada.';
-      if (viewerKeyChanged) {
-        message = 'Link dos espectadores regenerado — quem já estava assistindo precisa entrar de novo.';
-      } else if (hostKeyChanged) {
-        message = 'Chave do host regenerada.';
-      }
 
       return sendJson(res, 200, {
         ok: true,
-        message,
+        message: 'Sala atualizada.',
         active: Boolean(updated.active),
         maxViewers: updated.max_viewers,
-        links: viewerLinks(slug, updated.viewer_invite),
-        viewerInvite: updated.viewer_invite || '',
-        hostInvite: updated.host_invite || '',
+        joinMode: normalizeJoinMode(updated.join_mode),
+        links: viewerLinks(slug),
       });
     } catch (e) {
       console.error(e);

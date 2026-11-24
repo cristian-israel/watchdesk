@@ -5,13 +5,13 @@ type ProfileValue = {
   ready: boolean
   deviceId: string
   displayName: string
-  room: Me['room']
+  rooms: Me['rooms']
   error: string
   refresh: () => Promise<void>
   saveName: (name: string) => Promise<string | null>
 }
 
-const emptyMe: Me = { deviceId: '', displayName: '', room: null }
+const emptyMe: Me = { deviceId: '', displayName: '', rooms: [] }
 const ProfileContext = createContext<ProfileValue | null>(null)
 
 export function ProfileProvider({ children }: { children: ReactNode }) {
@@ -27,7 +27,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       return
     }
     setError('')
-    setMe(res.data)
+    setMe({
+      ...res.data,
+      rooms: Array.isArray(res.data.rooms) ? res.data.rooms : [],
+    })
     setReady(true)
   }, [])
 
@@ -42,7 +45,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     })
     if (!res.ok) return res.message
     setError('')
-    setMe(res.data)
+    setMe({
+      ...res.data,
+      rooms: Array.isArray(res.data.rooms) ? res.data.rooms : [],
+    })
     return null
   }, [])
 
@@ -51,7 +57,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       ready,
       deviceId: me.deviceId,
       displayName: me.displayName,
-      room: me.room,
+      rooms: me.rooms,
       error,
       refresh,
       saveName,

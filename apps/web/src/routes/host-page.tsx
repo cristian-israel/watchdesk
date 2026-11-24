@@ -5,10 +5,9 @@ import { useActionDialog } from '@/actions/action-dialog'
 import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
+import { api, apiOrThrow, type JoinMode, type SessionInfo } from '@/lib/api'
 import {
   appendMessage,
   appendSystem,
@@ -20,7 +19,13 @@ import {
 import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
-import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
+import {
+  peerKey,
+  type PendingMember,
+  type RosterMember,
+  type SignalInbound,
+  type SignalOutbound,
+} from '@/lib/signal'
 
 const MAX_SLOTS = 8
 
@@ -39,18 +44,19 @@ export function HostPage() {
   const { room = '' } = useParams()
   const navigate = useNavigate()
   const action = useActionDialog()
-  const { displayName: profileName, deviceId, room: owned } = useProfile()
+  const { displayName: profileName, deviceId, rooms: ownedRooms } = useProfile()
+  const owned = ownedRooms.find((r) => r.slug === room)
   const [displayName, setDisplayName] = useState('')
-  const [hostKey, setHostKey] = useState('')
   const [booting, setBooting] = useState(true)
   const [panel, setPanel] = useState(false)
+  const [denied, setDenied] = useState('')
   const [shares, setShares] = useState<Map<number, ShareEntry>>(new Map())
   const [roster, setRoster] = useState<RosterMember[]>([])
+  const [pending, setPending] = useState<PendingMember[]>([])
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [active, setActive] = useState(true)
   const [maxViewers, setMaxViewers] = useState(8)
-  const [viewerInvite, setViewerInvite] = useState('')
-  const [hostInvite, setHostInvite] = useState('')
+  const [joinMode, setJoinMode] = useState<JoinMode>('ask')
   const [newMax, setNewMax] = useState(8)
 
   const panelRef = useRef(false)
@@ -87,24 +93,23 @@ export function HostPage() {
     setActive(data.active)
     setMaxViewers(data.maxViewers)
     setNewMax(data.maxViewers)
-    if (data.viewerInvite) setViewerInvite(data.viewerInvite)
-    if (data.hostInvite) setHostInvite(data.hostInvite)
+    setJoinMode(data.joinMode || 'ask')
+    setDenied('')
     panelRef.current = true
     setPanel(true)
   }
 
   async function boot() {
     setBooting(true)
+    setDenied('')
     const res = await api<SessionInfo>('/api/session')
     if (res.ok && res.data.role === 'host' && res.data.room === room) {
       openFromSession(res.data)
       setBooting(false)
       return
     }
-    if (owned?.slug === room) {
-      if (owned.viewerInvite) setViewerInvite(owned.viewerInvite)
-      if (owned.hostInvite) setHostInvite(owned.hostInvite)
-      const host = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/host`, {
+    if (owned) {
+      const host = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/resume`, {
         method: 'POST',
         body: JSON.stringify({}),
       })
@@ -113,7 +118,10 @@ export function HostPage() {
         setBooting(false)
         return
       }
+      setDenied(host.message)
       toast.error(host.message, { id: host.message })
+    } else {
+      setDenied('Só o aparelho que criou esta sala pode transmitir.')
     }
     setBooting(false)
   }
@@ -179,7 +187,9 @@ export function HostPage() {
       setActive(msg.active)
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
+      if (msg.joinMode) setJoinMode(msg.joinMode)
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
+      setPending(msg.pending || [])
       for (const [slot, share] of sharesRef.current) {
         await offerAllViewers(slot, share.stream)
       }
@@ -255,26 +265,22 @@ export function HostPage() {
       viewersRef.current = next
       return
     }
+    if (msg.type === 'admit_request' || msg.type === 'pending') {
+      if (msg.type === 'pending') setPending(msg.pending)
+      else {
+        setPending((prev) => {
+          if (prev.some((p) => p.peerId === msg.peerId)) return prev
+          return [...prev, { peerId: msg.peerId, displayName: msg.displayName }]
+        })
+      }
+      return
+    }
     if (msg.type === 'room_updated') {
       setActive(msg.active)
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
+      if (msg.joinMode) setJoinMode(msg.joinMode)
     }
-  }
-
-  async function onEnter(e: FormEvent) {
-    e.preventDefault()
-    if (hostKey.length < 4) {
-      action.fail('Informe a chave do host.')
-      return
-    }
-    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
-      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/host`, {
-        method: 'POST',
-        body: JSON.stringify({ hostKey }),
-      })
-      openFromSession(data)
-    })
   }
 
   async function shareScreen() {
@@ -333,14 +339,15 @@ export function HostPage() {
     navigate('/salas')
   }
 
-  async function patchRoom(body: Record<string, unknown>, labels: { pending: string; success: string }) {
+  async function patchRoom(
+    body: Record<string, unknown>,
+    labels: { pending: string; success: string },
+  ) {
     await action.run(labels, async () => {
       const data = await apiOrThrow<{
-        message?: string
         active?: boolean
         maxViewers?: number
-        viewerInvite?: string
-        hostInvite?: string
+        joinMode?: JoinMode
       }>(`/api/rooms/${encodeURIComponent(room)}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -350,9 +357,13 @@ export function HostPage() {
         setMaxViewers(data.maxViewers)
         setNewMax(data.maxViewers)
       }
-      if (typeof data.viewerInvite === 'string') setViewerInvite(data.viewerInvite)
-      if (typeof data.hostInvite === 'string') setHostInvite(data.hostInvite)
+      if (data.joinMode) setJoinMode(data.joinMode)
     })
+  }
+
+  function admit(peerId: string, accept: boolean) {
+    sendRef.current({ type: 'admit', peerId, accept })
+    setPending((prev) => prev.filter((p) => p.peerId !== peerId))
   }
 
   async function kickAllViewers() {
@@ -361,6 +372,7 @@ export function HostPage() {
       for (const key of [...peersRef.current.keys()]) closePeer(key)
       viewersRef.current.clear()
       setRoster((prev) => prev.filter((m) => m.role !== 'viewer'))
+      setPending([])
     })
   }
 
@@ -384,37 +396,22 @@ export function HostPage() {
   if (!panel) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 sm:pb-0">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>Transmitir — {room}</CardTitle>
-            <CardDescription>Entre com a chave do host.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form className="flex flex-col gap-3" onSubmit={(e) => void onEnter(e)} autoComplete="off">
-              <div className="space-y-2">
-                <Label htmlFor="hostKey">Chave do host</Label>
-                <Input
-                  id="hostKey"
-                  type="password"
-                  value={hostKey}
-                  onChange={(e) => setHostKey(e.target.value)}
-                  minLength={4}
-                  required
-                  autoFocus
-                />
-              </div>
-              <Button type="submit" disabled={action.busy} className="w-full">
-                Entrar
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+        <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-card p-6">
+          <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
+          <p className="text-sm text-muted-foreground">
+            {denied || 'Não foi possível abrir o painel nesta sala.'}
+          </p>
+          <Button type="button" variant="outline" onClick={() => navigate('/salas')}>
+            Voltar às salas
+          </Button>
+        </div>
       </div>
     )
   }
 
   const sorted = [...shares.entries()].sort((a, b) => a[0] - b[0])
   const viewers = roster.filter((m) => m.role === 'viewer')
+  const link = viewerInviteUrl(room)
 
   return (
     <ChatSplit
@@ -433,7 +430,8 @@ export function HostPage() {
             <div>
               <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
               <p className="text-sm text-muted-foreground">
-                {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} · máx. {maxViewers} espectadores
+                {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} ·{' '}
+                {joinMode === 'open' ? 'pública' : 'com aceite'} · máx. {maxViewers}
               </p>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => void logout()}>
@@ -441,12 +439,26 @@ export function HostPage() {
             </Button>
           </header>
 
+          <section className="space-y-2">
+            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Link para espectadores
+            </h2>
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <span className="font-mono text-xs break-all">{link}</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => void copy(link)}>
+                Copiar
+              </Button>
+            </div>
+          </section>
+
           <Button type="button" disabled={shares.size >= MAX_SLOTS} onClick={() => void shareScreen()}>
             Compartilhar uma tela
           </Button>
 
           <section>
-            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">No ar</h2>
+            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              No ar
+            </h2>
             {!sorted.length ? (
               <p className="text-sm text-muted-foreground">Nada sendo compartilhado.</p>
             ) : (
@@ -469,6 +481,41 @@ export function HostPage() {
             )}
           </section>
 
+          {joinMode === 'ask' ? (
+            <section className="space-y-2">
+              <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                Pedidos ({pending.length})
+              </h2>
+              {!pending.length ? (
+                <p className="text-sm text-muted-foreground">Ninguém aguardando.</p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {pending.map((p) => (
+                    <li
+                      key={p.peerId}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
+                    >
+                      <span className="text-sm">{p.displayName}</span>
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" onClick={() => admit(p.peerId, true)}>
+                          Aceitar
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => admit(p.peerId, false)}
+                        >
+                          Recusar
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : null}
+
           <section className="space-y-2">
             <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Espectadores ({viewers.length}/{maxViewers})
@@ -487,27 +534,6 @@ export function HostPage() {
                 </Button>
               </>
             )}
-          </section>
-
-          <section>
-            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Link para espectadores
-            </h2>
-            <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-              <span className="font-mono text-xs break-all">
-                {viewerInviteUrl(room, viewerInvite || owned?.viewerInvite || '')}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void copy(viewerInviteUrl(room, viewerInvite || owned?.viewerInvite || ''))
-                }
-              >
-                Copiar
-              </Button>
-            </div>
           </section>
 
           <section className="space-y-3 rounded-lg border border-border p-3">
@@ -529,10 +555,27 @@ export function HostPage() {
               >
                 {active ? 'Desativar sala' : 'Reativar sala'}
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void patchRoom(
+                    { joinMode: joinMode === 'ask' ? 'open' : 'ask' },
+                    {
+                      pending: 'Atualizando…',
+                      success:
+                        joinMode === 'ask' ? 'Sala pública' : 'Entrada com aceite',
+                    },
+                  )
+                }
+              >
+                {joinMode === 'ask' ? 'Tornar pública' : 'Exigir aceite'}
+              </Button>
             </div>
             <form
               className="flex flex-wrap items-end gap-2"
-              onSubmit={(e) => {
+              onSubmit={(e: FormEvent) => {
                 e.preventDefault()
                 void patchRoom(
                   { maxViewers: newMax },
@@ -557,52 +600,6 @@ export function HostPage() {
               </Button>
             </form>
           </section>
-
-          <section className="space-y-3 rounded-lg border border-border p-3">
-            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Segurança
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Regenerar invalida o link antigo. Quem já está na sala como espectador precisa entrar de novo.
-            </p>
-            {hostInvite || owned?.hostInvite ? (
-              <div className="space-y-1">
-                <Label>Chave do host (outro aparelho)</Label>
-                <p className="font-mono text-xs break-all text-muted-foreground">
-                  {hostInvite || owned?.hostInvite}
-                </p>
-              </div>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  void patchRoom(
-                    { regenerateViewerKey: true },
-                    { pending: 'Regenerando…', success: 'Link dos espectadores regenerado' },
-                  )
-                }
-              >
-                Regenerar link
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  void patchRoom(
-                    { regenerateHostKey: true },
-                    { pending: 'Regenerando…', success: 'Chave do host regenerada' },
-                  )
-                }
-              >
-                Regenerar chave do host
-              </Button>
-            </div>
-          </section>
-
         </div>
       </div>
     </ChatSplit>

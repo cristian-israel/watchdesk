@@ -13,6 +13,13 @@ export type RosterMember = {
   displayName: string
 }
 
+export type PendingMember = {
+  peerId: string
+  displayName: string
+}
+
+export type JoinMode = 'open' | 'ask'
+
 export type SignalInbound =
   | {
       type: 'welcome'
@@ -22,9 +29,12 @@ export type SignalInbound =
       displayName: string
       slots: number[]
       viewers?: { peerId: string; displayName: string }[]
+      pending?: PendingMember[]
       iceServers: RTCIceServer[]
       maxViewers: number
       active: boolean
+      joinMode?: JoinMode
+      admitStatus?: 'pending' | 'admitted'
     }
   | { type: 'error'; message: string }
   | { type: 'viewer_joined'; peerId: string; displayName: string }
@@ -39,7 +49,10 @@ export type SignalInbound =
   | { type: 'chat_history'; messages: ChatMessage[] }
   | { type: 'roster'; members: RosterMember[] }
   | { type: 'auth_changed'; message: string }
-  | { type: 'room_updated'; active: boolean; maxViewers: number }
+  | { type: 'room_updated'; active: boolean; maxViewers: number; joinMode?: JoinMode }
+  | { type: 'admit_request'; peerId: string; displayName: string }
+  | { type: 'admit_result'; accepted: boolean; message?: string; slots?: number[] }
+  | { type: 'pending'; pending: PendingMember[] }
 
 export type SignalOutbound =
   | { type: 'hello' }
@@ -49,6 +62,7 @@ export type SignalOutbound =
   | { type: 'answer'; to: string; slot: number; sdp: string }
   | { type: 'ice'; to: string; slot: number; candidate: RTCIceCandidateInit | null }
   | { type: 'chat'; body: string }
+  | { type: 'admit'; peerId: string; accept: boolean }
 
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'

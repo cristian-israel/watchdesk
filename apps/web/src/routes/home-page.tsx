@@ -11,7 +11,6 @@ import { Pagina } from '@/shell/pagina'
 type RecentItem = {
   slug: string
   label: string
-  viewerInvite: string
   lastSeenAt: string
 }
 
@@ -41,13 +40,13 @@ export function HomePage() {
       return
     }
     setErro('')
-    const target = viewerInviteUrl(parsed.slug, parsed.key)
+    const target = viewerInviteUrl(parsed.slug)
     const url = new URL(target)
     navigate(`${url.pathname}${url.hash}`)
   }
 
   function openRecent(item: RecentItem) {
-    const target = viewerInviteUrl(item.slug, item.viewerInvite || '')
+    const target = viewerInviteUrl(item.slug)
     const url = new URL(target)
     navigate(`${url.pathname}${url.hash}`)
   }
@@ -58,12 +57,12 @@ export function HomePage() {
   }
 
   return (
-    <Pagina titulo="Início" descricao="Assista com o link de convite. Seu nome fica neste aparelho.">
+    <Pagina titulo="Início" descricao="Assista com o link da sala. Seu nome fica neste aparelho.">
       <div className="flex flex-col gap-4">
         <Card>
           <CardHeader>
             <CardTitle>Assistir</CardTitle>
-            <CardDescription>Cole o link completo (já entra com a chave) ou só o id da sala.</CardDescription>
+            <CardDescription>Cole o link completo ou só o id da sala — sem senha.</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={onSubmit} autoComplete="off">
@@ -73,7 +72,7 @@ export function HomePage() {
                   id="invite"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="https://…/sala/…#k=…"
+                  placeholder="https://…/sala/…"
                   required
                   autoFocus
                 />

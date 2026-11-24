@@ -25,7 +25,7 @@ vi.mock('@/shell/profile', () => ({
     ready: true,
     deviceId: 'abc',
     displayName: 'Cris',
-    room: null,
+    rooms: [],
     error: '',
     refresh: async () => undefined,
     saveName: async () => null,

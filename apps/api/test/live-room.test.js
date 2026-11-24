@@ -8,6 +8,9 @@ const {
   resolveHostJoin,
   roster,
   detachClient,
+  promotePending,
+  denyPending,
+  pendingList,
 } = require('../src/live-room');
 
 describe('live-room resolveHostJoin', () => {
@@ -34,28 +37,10 @@ describe('live-room resolveHostJoin', () => {
     assert.equal(prevWs.msgs[0]?.type, 'error');
     assert.equal(prevWs.readyState, 3);
   });
+});
 
-  it('does nothing when same host reconnects on same ws', () => {
-    const room = createTestRoom();
-    const ws = mockWs();
-    room.host = {
-      ws,
-      peerId: 'h1',
-      role: 'host',
-      roomSlug: 'test',
-      displayName: 'Host',
-    };
-
-    const result = resolveHostJoin(room, {
-      sessionRole: 'host',
-      incomingWs: ws,
-    });
-
-    assert.equal(result.kicked, false);
-    assert.equal(room.host.peerId, 'h1');
-  });
-
-  it('ignores viewer sessions', () => {
+describe('live-room admit', () => {
+  it('promotes pending to viewer', () => {
     const room = createTestRoom();
     room.host = {
       ws: mockWs(),
@@ -64,19 +49,54 @@ describe('live-room resolveHostJoin', () => {
       roomSlug: 'test',
       displayName: 'Host',
     };
-
-    const result = resolveHostJoin(room, {
-      sessionRole: 'viewer',
-      incomingWs: mockWs(),
+    const viewerWs = mockWs();
+    room.pending.set('p1', {
+      ws: viewerWs,
+      peerId: 'p1',
+      role: 'pending',
+      roomSlug: 'test',
+      displayName: 'Ana',
+      deviceId: 'd1',
     });
 
-    assert.equal(result.kicked, false);
-    assert.equal(room.host.peerId, 'h1');
+    const result = promotePending(room, 'p1');
+    assert.equal(result.ok, true);
+    assert.equal(room.pending.size, 0);
+    assert.equal(room.viewers.get('p1')?.role, 'viewer');
+    assert.equal(room.admittedDevices.has('d1'), true);
+    assert.equal(viewerWs.msgs.some((m) => m.type === 'admit_result' && m.accepted), true);
+    assert.deepEqual(pendingList(room), []);
+  });
+
+  it('denies pending and closes socket', () => {
+    const room = createTestRoom();
+    room.host = {
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'Host',
+    };
+    const viewerWs = mockWs();
+    room.pending.set('p1', {
+      ws: viewerWs,
+      peerId: 'p1',
+      role: 'pending',
+      roomSlug: 'test',
+      displayName: 'Ana',
+      sessionId: 'sess1',
+    });
+
+    const result = denyPending(room, 'p1');
+    assert.equal(result.ok, true);
+    assert.equal(room.pending.size, 0);
+    assert.equal(viewerWs.msgs[0]?.accepted, false);
+    assert.equal(viewerWs.readyState, 3);
   });
 });
 
 describe('live-room roster', () => {
-  it('lists host and viewers without seats or panels', () => {
+  it('lists host and viewers', () => {
     const room = createTestRoom();
     room.host = {
       ws: mockWs(),
@@ -101,7 +121,6 @@ describe('live-room roster', () => {
         { peerId: 'v1', role: 'viewer' },
       ],
     );
-    assert.equal(members.every((m) => m.seat === undefined), true);
   });
 });
 

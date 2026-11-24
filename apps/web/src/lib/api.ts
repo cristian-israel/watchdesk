@@ -41,19 +41,20 @@ export async function apiOrThrow<T = unknown>(path: string, init: RequestInit = 
   return res.data
 }
 
+export type JoinMode = 'open' | 'ask'
+
 export type DeviceRoom = {
   slug: string
   active: boolean
   maxViewers: number
+  joinMode: JoinMode
   links: string[]
-  viewerInvite: string
-  hostInvite: string
 }
 
 export type Me = {
   deviceId: string
   displayName: string
-  room: DeviceRoom | null
+  rooms: DeviceRoom[]
 }
 
 export type SessionInfo = {
@@ -63,7 +64,7 @@ export type SessionInfo = {
   displayName: string
   active: boolean
   maxViewers: number
+  joinMode: JoinMode
   links: string[]
-  viewerInvite?: string
-  hostInvite?: string
+  status?: 'pending' | 'admitted'
 }

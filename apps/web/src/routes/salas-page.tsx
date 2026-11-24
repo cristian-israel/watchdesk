@@ -1,12 +1,10 @@
-import { FormEvent, useState } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { useNavigate } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
+import { apiOrThrow, type SessionInfo } from '@/lib/api'
 import { viewerInviteUrl } from '@/lib/room'
 import { Pagina } from '@/shell/pagina'
 import { useProfile } from '@/shell/profile'
@@ -14,40 +12,34 @@ import { useProfile } from '@/shell/profile'
 export function SalasPage() {
   const navigate = useNavigate()
   const action = useActionDialog()
-  const { room, refresh, displayName } = useProfile()
-  const [maxViewers, setMaxViewers] = useState(8)
+  const { rooms, refresh, displayName } = useProfile()
+  const [joinMode, setJoinMode] = useState<'ask' | 'open'>('ask')
 
-  async function onCreate(e: FormEvent) {
-    e.preventDefault()
-    await action.run({ pending: 'Criando sala…', success: 'Sala criada' }, async () => {
-      await apiOrThrow('/api/rooms', {
+  async function novaTransmissao() {
+    await action.run({ pending: 'Criando…', success: 'Sala pronta' }, async () => {
+      const created = await apiOrThrow<SessionInfo>('/api/rooms', {
         method: 'POST',
-        body: JSON.stringify({ maxViewers }),
+        body: JSON.stringify({ joinMode, maxViewers: 8 }),
       })
       await refresh()
+      navigate(`/salas/${encodeURIComponent(created.room)}`)
     })
   }
 
-  async function transmitir() {
-    if (!room) return
+  async function reabrir(slug: string) {
     await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
-      const session = await api<SessionInfo>('/api/session')
-      const alreadyHost = session.ok && session.data.role === 'host' && session.data.room === room.slug
-      if (!alreadyHost) {
-        await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room.slug)}/host`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        })
-      }
-      navigate(`/salas/${encodeURIComponent(room.slug)}`)
+      await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(slug)}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      navigate(`/salas/${encodeURIComponent(slug)}`)
     })
   }
 
-  async function excluir() {
-    if (!room) return
-    if (!window.confirm(`Excluir a sala ${room.slug}? Quem estiver nela sai na hora.`)) return
+  async function excluir(slug: string) {
+    if (!window.confirm(`Excluir a sala ${slug}? Quem estiver nela sai na hora.`)) return
     await action.run({ pending: 'Excluindo…', success: 'Sala excluída' }, async () => {
-      await apiOrThrow('/api/me/room', { method: 'DELETE' })
+      await apiOrThrow(`/api/rooms/${encodeURIComponent(slug)}`, { method: 'DELETE' })
       await refresh()
     })
   }
@@ -61,75 +53,110 @@ export function SalasPage() {
     }
   }
 
-  if (room) {
-    const convite = viewerInviteUrl(room.slug, room.viewerInvite || '')
-    return (
-      <Pagina titulo="Salas" descricao="Este aparelho já tem uma sala. Exclua para criar outra.">
+  return (
+    <Pagina
+      titulo="Salas"
+      descricao="Crie uma transmissão, copie o link e compartilhe a tela. Sem senha — só o link."
+    >
+      <div className="flex flex-col gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>{displayName || room.slug}</CardTitle>
+            <CardTitle>Nova transmissão</CardTitle>
             <CardDescription>
-              {room.slug} · {room.active ? 'ativa' : 'desativada'} · máx. {room.maxViewers} espectadores
+              {displayName
+                ? `Como ${displayName}. Escolha se quem chega precisa do seu aceite.`
+                : 'Defina seu nome no menu antes de transmitir.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <div className="space-y-2">
-              <Label htmlFor="convite">Link de convite</Label>
-              <div className="flex gap-2">
-                <Input id="convite" value={convite} readOnly />
-                <Button type="button" variant="outline" onClick={() => void copiar(convite)}>
-                  Copiar
-                </Button>
-              </div>
-            </div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button type="button" disabled={action.busy} onClick={() => void transmitir()} className="sm:flex-1">
-                Transmitir
+              <Button
+                type="button"
+                variant={joinMode === 'ask' ? 'default' : 'outline'}
+                className="sm:flex-1"
+                onClick={() => setJoinMode('ask')}
+              >
+                Pedir para entrar
               </Button>
               <Button
                 type="button"
-                variant="destructive"
-                disabled={action.busy}
-                onClick={() => void excluir()}
+                variant={joinMode === 'open' ? 'default' : 'outline'}
                 className="sm:flex-1"
+                onClick={() => setJoinMode('open')}
               >
-                Excluir
+                Público (link basta)
               </Button>
             </div>
+            <Button type="button" disabled={action.busy || !displayName} onClick={() => void novaTransmissao()}>
+              Começar a transmitir
+            </Button>
           </CardContent>
         </Card>
-      </Pagina>
-    )
-  }
 
-  return (
-    <Pagina titulo="Salas" descricao="Uma sala por aparelho. O link de convite já inclui a chave.">
-      <Card>
-        <CardHeader>
-          <CardTitle>Nova sala</CardTitle>
-          <CardDescription>Depois de criar, transmita por aqui. Para outra sala, exclua esta.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="flex flex-col gap-3" onSubmit={(e) => void onCreate(e)} autoComplete="off">
-            <div className="space-y-2">
-              <Label htmlFor="maxViewers">Máx. espectadores (1–8)</Label>
-              <Input
-                id="maxViewers"
-                type="number"
-                min={1}
-                max={8}
-                value={maxViewers}
-                onChange={(e) => setMaxViewers(Number(e.target.value))}
-                required
-                autoFocus
-              />
-            </div>
-            <Button type="submit" disabled={action.busy} className="w-full">
-              Criar sala
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Suas salas</CardTitle>
+            <CardDescription>Reabra no mesmo aparelho ou encerre quando não precisar mais.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!rooms.length ? (
+              <p className="text-sm text-muted-foreground">Nenhuma sala ainda.</p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {rooms.map((room) => {
+                  const convite = viewerInviteUrl(room.slug)
+                  return (
+                    <li
+                      key={room.slug}
+                      className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="font-medium">{room.slug}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {room.active ? 'ativa' : 'desativada'} ·{' '}
+                            {room.joinMode === 'open' ? 'pública' : 'com aceite'} · máx.{' '}
+                            {room.maxViewers}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={action.busy}
+                            onClick={() => void reabrir(room.slug)}
+                          >
+                            Transmitir
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            disabled={action.busy}
+                            onClick={() => void excluir(room.slug)}
+                          >
+                            Excluir
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          readOnly
+                          value={convite}
+                          className="h-9 min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 font-mono text-xs"
+                        />
+                        <Button type="button" variant="outline" size="sm" onClick={() => void copiar(convite)}>
+                          Copiar
+                        </Button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </Pagina>
   )
 }

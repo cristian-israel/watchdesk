@@ -11,19 +11,29 @@ vi.mock('@/lib/api', () => ({
   apiOrThrow: vi.fn(),
 }))
 
+const refresh = vi.fn(async () => undefined)
+
 vi.mock('@/shell/profile', () => ({
   useProfile: () => ({
-    room: null,
+    rooms: [],
     displayName: 'Cris',
-    refresh: vi.fn(async () => undefined),
+    refresh,
   }),
 }))
+
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router')
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+  }
+})
 
 const mockedApiOrThrow = vi.mocked(apiOrThrow)
 
 describe('SalasPage', () => {
-  it('envia POST /api/rooms ao criar', async () => {
-    mockedApiOrThrow.mockResolvedValue({})
+  it('cria transmissão com joinMode ask por padrão', async () => {
+    mockedApiOrThrow.mockResolvedValue({ room: 'abc123' })
     const user = userEvent.setup()
     render(
       <MemoryRouter>
@@ -33,13 +43,11 @@ describe('SalasPage', () => {
       </MemoryRouter>,
     )
 
-    await user.clear(screen.getByLabelText('Máx. espectadores (1–8)'))
-    await user.type(screen.getByLabelText('Máx. espectadores (1–8)'), '4')
-    await user.click(screen.getByRole('button', { name: 'Criar sala' }))
+    await user.click(screen.getByRole('button', { name: 'Começar a transmitir' }))
 
     expect(mockedApiOrThrow).toHaveBeenCalledWith('/api/rooms', {
       method: 'POST',
-      body: JSON.stringify({ maxViewers: 4 }),
+      body: JSON.stringify({ joinMode: 'ask', maxViewers: 8 }),
     })
   })
 })

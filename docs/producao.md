@@ -64,6 +64,8 @@ DATABASE_URL=mysql://watchdesk:SENHA_FORTE@mysql:3306/watchdesk
 
 O host `mysql` é o serviço do prod-hub. Migrations rodam sozinhas no boot da API.
 
+Schema atual (`001_init.sql`) é instalação limpa (salas por link, sem chaves). Se o database já existia com o schema antigo, drope e recrie o database `watchdesk` antes de subir a API nova.
+
 Para um MySQL só deste Compose, use `COMPOSE_PROFILES=frontier,mysql` (ou `local,mysql` no lab) e defina `MYSQL_PASSWORD`. Sem `DATABASE_URL`, o Compose aponta para `mysql://watchdesk:<senha>@mysql:3306/watchdesk` do serviço local. Crie o database na infra com:
 
 ```sql

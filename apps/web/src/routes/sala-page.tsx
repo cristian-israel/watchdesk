@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
@@ -6,8 +6,6 @@ import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
 import {
   appendMessage,
@@ -17,7 +15,6 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
-import { inviteKeyFromHash } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
@@ -35,28 +32,34 @@ export function SalaPage() {
   const action = useActionDialog()
   const { displayName: profileName, deviceId } = useProfile()
   const [displayName, setDisplayName] = useState('')
-  const [key, setKey] = useState('')
   const [missing, setMissing] = useState('')
   const [booting, setBooting] = useState(true)
   const [active, setActive] = useState(false)
+  const [admitPending, setAdmitPending] = useState(false)
+  const [denied, setDenied] = useState('')
   const [waiting, setWaiting] = useState(true)
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
 
-  useImmersive(active)
+  const watching = active && !admitPending
+  useImmersive(watching)
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const peersRef = useRef(new Map<string, RTCPeerConnection>())
   const tilesRef = useRef(new Map<number, TileEntry>())
   const gridRef = useRef<HTMLDivElement>(null)
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+  const admitPendingRef = useRef(admitPending)
+  admitPendingRef.current = admitPending
 
   const { send } = useSignal(
     active,
     (msg) => {
       void onSignal(msg)
     },
-    () => toast.error('Conexão perdida. Tentando de novo…'),
+    () => {
+      if (!admitPendingRef.current) toast.error('Conexão perdida. Tentando de novo…')
+    },
   )
   sendRef.current = (msg) => send(msg)
 
@@ -70,13 +73,12 @@ export function SalaPage() {
 
   // Firefox pausa/congela <video> com MediaStream ao perder foco; ao voltar precisa play().
   useEffect(() => {
-    if (!active) return
+    if (!watching) return
 
     function resumeVideos() {
       for (const { video, tile } of tilesRef.current.values()) {
         const stream = video.srcObject
         if (!stream) continue
-        // Reatribuir o stream acorda o decoder do Firefox quando o frame fica preto.
         video.srcObject = null
         video.srcObject = stream
         void video
@@ -86,7 +88,7 @@ export function SalaPage() {
             setWaiting(false)
           })
           .catch(() => {
-            /* autoplay bloqueado — usuário precisa interagir */
+            /* autoplay bloqueado */
           })
       }
     }
@@ -101,16 +103,15 @@ export function SalaPage() {
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', resumeVideos)
     }
-  }, [active])
-
-  function clearInviteHash() {
-    if (!location.hash) return
-    history.replaceState(null, '', `${location.pathname}${location.search}`)
-  }
+  }, [watching])
 
   async function boot() {
     setBooting(true)
-    const meta = await api<{ exists: boolean; active?: boolean }>(`/api/rooms/${encodeURIComponent(room)}`)
+    setDenied('')
+    setAdmitPending(false)
+    const meta = await api<{ exists: boolean; active?: boolean; joinMode?: string }>(
+      `/api/rooms/${encodeURIComponent(room)}`,
+    )
     if (!meta.ok || meta.data.exists === false) {
       setMissing('Sala não encontrada.')
       setBooting(false)
@@ -118,35 +119,40 @@ export function SalaPage() {
     }
     if (meta.data.active === false) {
       setRoomActive(false)
+      setBooting(false)
+      return
     }
 
     const res = await api<SessionInfo>('/api/session')
     if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
       setDisplayName(res.data.displayName)
       setActive(true)
-      clearInviteHash()
+      // welcome no WS confirma admitido vs fila (ask)
+      setAdmitPending((meta.data.joinMode || res.data.joinMode) === 'ask')
       setBooting(false)
       return
     }
 
-    const inviteKey = inviteKeyFromHash()
-    if (inviteKey && meta.data.active !== false) {
-      const joined = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
-        method: 'POST',
-        body: JSON.stringify({ viewerKey: inviteKey }),
-      })
-      clearInviteHash()
-      if (joined.ok) {
-        setDisplayName(joined.data.displayName)
-        setActive(true)
-        setBooting(false)
-        return
-      }
-      toast.error(joined.message, { id: joined.message })
-      setKey(inviteKey)
-    }
-
+    await enter()
     setBooting(false)
+  }
+
+  async function enter() {
+    if (!profileName) {
+      setMissing('Defina seu nome no menu antes de entrar.')
+      return
+    }
+    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
+      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      setDisplayName(data.displayName)
+      setMissing('')
+      setDenied('')
+      setActive(true)
+      setAdmitPending(data.status === 'pending')
+    })
   }
 
   function ensureTile(slot: number) {
@@ -175,7 +181,6 @@ export function SalaPage() {
       tile.classList.add('live')
       setWaiting(false)
     })
-    // Firefox: ao voltar do background o elemento fica paused sem limpar o stream.
     video.addEventListener('pause', () => {
       if (document.visibilityState !== 'visible' || !video.srcObject) return
       void video.play().catch(() => {
@@ -198,43 +203,28 @@ export function SalaPage() {
   function syncSlots(slots: number[]) {
     const wanted = new Set(slots)
     for (const slot of [...tilesRef.current.keys()]) {
-      if (!wanted.has(slot)) {
-        removeTile(slot)
-        for (const key of [...peersRef.current.keys()]) {
-          if (key.endsWith(`:${slot}`)) closePeer(key)
-        }
-      }
+      if (!wanted.has(slot)) removeTile(slot)
     }
     for (const slot of slots) ensureTile(slot)
-    setWaiting(slots.length === 0)
+    setWaiting(!slots.length)
   }
 
-  function closePeer(key: string) {
-    const pc = peersRef.current.get(key)
-    if (!pc) return
-    peersRef.current.delete(key)
-    try {
-      pc.close()
-    } catch {
-      /* ok */
-    }
-  }
-
-  async function handleOffer(from: string, slot: number, sdp: string) {
-    const tile = ensureTile(slot)
-    if (!tile) return
-
+  async function ensurePc(from: string, slot: number) {
     const key = peerKey(from, slot)
-    closePeer(key)
+    let pc = peersRef.current.get(key)
+    if (pc) return pc
 
-    const pc = new RTCPeerConnection({ iceServers: iceRef.current })
+    const tile = ensureTile(slot)
+    if (!tile) throw new Error('grid')
+
+    pc = new RTCPeerConnection({ iceServers: iceRef.current })
     peersRef.current.set(key, pc)
 
     pc.ontrack = (e) => {
       const stream = e.streams[0] || new MediaStream([e.track])
       tile.video.srcObject = stream
       void tile.video.play().catch(() => {
-        /* autoplay — muted+playsinline cobrem o caso normal */
+        /* autoplay */
       })
     }
     pc.onicecandidate = (ev) => {
@@ -246,13 +236,20 @@ export function SalaPage() {
       })
     }
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
-        tile.stateEl.textContent = 'Reconectando…'
-        tile.tile.classList.remove('live')
+      if (['failed', 'closed'].includes(pc!.connectionState)) {
+        peersRef.current.delete(key)
+        try {
+          pc!.close()
+        } catch {
+          /* ok */
+        }
       }
-      if (['failed', 'closed'].includes(pc.connectionState)) closePeer(key)
     }
+    return pc
+  }
 
+  async function handleOffer(from: string, slot: number, sdp: string) {
+    const pc = await ensurePc(from, slot)
     await pc.setRemoteDescription({ type: 'offer', sdp })
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
@@ -263,19 +260,31 @@ export function SalaPage() {
     if (msg.type === 'welcome') {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
+      if (msg.admitStatus === 'pending') {
+        setAdmitPending(true)
+        return
+      }
+      setAdmitPending(false)
       syncSlots(msg.slots || [])
+      return
+    }
+    if (msg.type === 'admit_result') {
+      if (msg.accepted) {
+        setAdmitPending(false)
+        setDenied('')
+        syncSlots(msg.slots || [])
+        toast.success('Você entrou na sala')
+      } else {
+        setDenied(msg.message || 'O host recusou sua entrada.')
+        teardown()
+        setActive(false)
+        setAdmitPending(false)
+        await api('/api/logout', { method: 'POST' })
+      }
       return
     }
     if (msg.type === 'error') {
       toast.error(msg.message, { id: msg.message })
-      if (
-        msg.message.includes('Sessão') ||
-        msg.message.includes('Chave') ||
-        msg.message.includes('desativada') ||
-        msg.message.includes('cheia')
-      ) {
-        void leave()
-      }
       return
     }
     if (msg.type === 'auth_changed') {
@@ -284,7 +293,7 @@ export function SalaPage() {
       return
     }
     if (msg.type === 'slots') {
-      syncSlots(msg.slots)
+      if (!admitPendingRef.current) syncSlots(msg.slots)
       return
     }
     if (msg.type === 'host_joined') {
@@ -322,10 +331,12 @@ export function SalaPage() {
       return
     }
     if (msg.type === 'offer') {
+      if (admitPendingRef.current) return
       await handleOffer(msg.from, msg.slot, msg.sdp)
       return
     }
     if (msg.type === 'ice') {
+      if (admitPendingRef.current) return
       const pc = peersRef.current.get(peerKey(msg.from, msg.slot))
       if (!pc || !msg.candidate) return
       try {
@@ -352,22 +363,6 @@ export function SalaPage() {
     }
   }
 
-  async function enter(e?: FormEvent) {
-    e?.preventDefault()
-    if (!key) {
-      action.fail('Informe a chave.')
-      return
-    }
-    await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
-      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
-        method: 'POST',
-        body: JSON.stringify({ viewerKey: key }),
-      })
-      setDisplayName(data.displayName)
-      setActive(true)
-    })
-  }
-
   function teardown() {
     peersRef.current.forEach((pc) => pc.close())
     peersRef.current.clear()
@@ -381,8 +376,8 @@ export function SalaPage() {
   async function leave() {
     teardown()
     setActive(false)
+    setAdmitPending(false)
     await api('/api/logout', { method: 'POST' })
-    setKey('')
   }
 
   if (booting) {
@@ -400,32 +395,50 @@ export function SalaPage() {
           <CardHeader>
             <CardTitle>Sala {room}</CardTitle>
             <CardDescription>
-              {missing
-                ? missing
-                : !roomActive
-                  ? 'Esta sala está desativada no momento.'
-                  : 'Informe a chave dos espectadores.'}
+              {denied
+                ? denied
+                : missing
+                  ? missing
+                  : !roomActive
+                    ? 'Esta sala está desativada no momento.'
+                    : 'Entre com o link desta sala.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {roomActive && !missing ? (
-              <form className="flex flex-col gap-3" onSubmit={(e) => void enter(e)} autoComplete="off">
-                <div className="space-y-2">
-                  <Label htmlFor="key">Chave</Label>
-                  <Input
-                    id="key"
-                    type="password"
-                    value={key}
-                    onChange={(e) => setKey(e.target.value)}
-                    required
-                    autoFocus
-                  />
-                </div>
-                <Button type="submit" disabled={action.busy} className="w-full">
-                  Entrar
-                </Button>
-              </form>
+            {roomActive && !missing && !denied ? (
+              <Button
+                type="button"
+                disabled={action.busy || !profileName}
+                className="w-full"
+                onClick={() => void enter()}
+              >
+                Entrar
+              </Button>
+            ) : denied ? (
+              <Button type="button" className="w-full" onClick={() => void enter()}>
+                Tentar de novo
+              </Button>
             ) : null}
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (admitPending) {
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 sm:pb-0">
+        <Card className="w-full max-w-sm">
+          <CardHeader>
+            <CardTitle>Aguardando o host…</CardTitle>
+            <CardDescription>
+              Você pediu para entrar em {room}. Quando o host aceitar, a transmissão aparece aqui.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button type="button" variant="outline" className="w-full" onClick={() => void leave()}>
+              Cancelar
+            </Button>
           </CardContent>
         </Card>
       </div>
