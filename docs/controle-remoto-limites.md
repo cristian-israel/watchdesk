@@ -40,4 +40,4 @@ COMPANION_DOWNLOAD_URL=/companion/watchdesk-companion-setup.exe
 COMPANION_MANDATORY=false
 ```
 
-Publicar o instalador em `deploy/companion/` (montado em `/opt/companion` no Caddy).
+Publicar o instalador em `deploy/companion/` (montado em `/srv/companion` no Caddy).
