@@ -1,8 +1,17 @@
 import { FormEvent, useEffect, useState } from 'react'
-import { Download } from 'lucide-react'
+import { CircleHelp, Download } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
@@ -113,12 +122,58 @@ export function HomePage() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Companion</CardTitle>
-            <CardDescription>
-              App no PC que transmite a tela com controle remoto. Baixe aqui e abra na máquina do
-              agente{companion?.version ? ` (v${companion.version})` : ''}.
-            </CardDescription>
+          <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+            <div>
+              <CardTitle>Companion</CardTitle>
+              <CardDescription>
+                App no PC do agente para transmitir a tela com controle remoto
+                {companion?.version ? ` (v${companion.version})` : ''}.
+              </CardDescription>
+            </div>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button type="button" variant="ghost" size="icon" aria-label="Como usar o companion">
+                  <CircleHelp />
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md" showCloseButton>
+                <DialogHeader>
+                  <DialogTitle>Como usar o companion</DialogTitle>
+                  <DialogDescription>
+                    Use no computador que vai transmitir a tela. Quem só assiste continua no
+                    navegador.
+                  </DialogDescription>
+                </DialogHeader>
+                <ol className="list-decimal space-y-2 pl-4 text-sm text-foreground">
+                  <li>Baixe o instalador do seu sistema (Windows ou Linux) neste card.</li>
+                  <li>
+                    Instale ou execute o app no PC do agente.
+                    <span className="block text-muted-foreground">
+                      Linux (AppImage): dê permissão de execução (
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">chmod +x</code>) e rode
+                      o arquivo. Precisa de <code className="rounded bg-muted px-1 py-0.5 text-xs">xdotool</code>{' '}
+                      no PATH.
+                    </span>
+                  </li>
+                  <li>Abra o companion e entre na sala (cole o link ou o id).</li>
+                  <li>
+                    Transmita pelo companion. No mesmo PC, o navegador serve só de painel (promover
+                    espectador a interagir, chat).
+                  </li>
+                  <li>
+                    Não use “Compartilhar tela” no browser ao mesmo tempo que o companion.
+                  </li>
+                  <li>
+                    Controle remoto: o host promove o espectador a interagir; no companion dá para
+                    revogar.
+                  </li>
+                </ol>
+                {companion?.notes ? (
+                  <p className="text-sm text-muted-foreground">{companion.notes}</p>
+                ) : null}
+                <DialogFooter showCloseButton />
+              </DialogContent>
+            </Dialog>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <Button asChild variant={os === 'windows' ? 'default' : 'outline'} className="sm:flex-1">
@@ -133,14 +188,6 @@ export function HomePage() {
                 Linux (AppImage)
               </a>
             </Button>
-            {companion?.notes ? (
-              <p className="w-full text-sm text-muted-foreground">{companion.notes}</p>
-            ) : (
-              <p className="w-full text-sm text-muted-foreground">
-                Linux: precisa de xdotool. No agente, use o companion para transmitir — o browser fica
-                só como painel.
-              </p>
-            )}
           </CardContent>
         </Card>
 
