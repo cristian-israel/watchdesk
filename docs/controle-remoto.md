@@ -4,69 +4,65 @@ Assistência remota na LAN: espectador entra **só vendo**; o host promove a **i
 
 ## Decisões de produto
 
-- Entrar na sala = `controlMode: view` (+ chat). Sem mouse/teclado no desktop.
-- Host promove um espectador para `interact` (e rebaixa/corta a qualquer momento).
-- **Um piloto por vez.** No MVP o host promove sozinho (pedido do viewer fica para depois).
+- **Companion = console do host** (criar/sincronizar sala, convite, transmitir, promover, preferências). A web do agente é opcional (painel leve).
+- Entrar na sala como viewer = `controlMode: view` (+ chat). Sem mouse/teclado no desktop.
+- Host promove um espectador para `interact` (e rebaixa/corta a qualquer momento) — no companion ou no painel web.
+- **Um piloto por vez.**
 - Link de convite **não** concede interagir.
-- **Arquitetura híbrida:** web (salas, viewer, painel do host) + companion `.exe` no PC remoto.
-- **Um caminho de transmissão por sessão:** web `getDisplayMedia` **ou** companion — nunca os dois publicando vídeo juntos.
-  - Sem companion: só visualizar (como hoje).
-  - Com companion na sala: o app captura e injeta; o browser do host vira **painel** (promover, chat, config) sem ser kickado. O companion também lista espectadores e promove/revoga.
+- **Arquitetura híbrida:** web (espectadores + painel opcional) + companion no PC remoto.
+- **Um caminho de transmissão por sessão:** web `getDisplayMedia` **ou** companion — nunca os dois.
+  - Sem companion: só visualizar (browser share).
+  - Com companion: app captura e injeta; browser do host vira **painel** (não é kickado).
 - Companion: **Windows e Linux (X11 / xdotool)**. Viewer permanece no browser.
-- Update do companion: banner + botão Atualizar (usuário confirma; sem force silencioso no MVP).
+- Update do companion: banner + botão Atualizar; `COMPANION_MANDATORY` bloqueia abaixo de `minVersion`.
+- Deep link: `watchdesk://connect?origin=…&room=…&transmit=1`.
 
-## Fluxo
+## Fluxo agente (recomendado)
+
+```text
+Companion: origem + nome → sync → criar sala → copiar convite
+Companion: conectar e transmitir
+Viewer (browser): abre convite → só vê
+Companion: promover viewer → interact
+Companion injeta input (xdotool / Win)
+```
+
+## Fluxo técnico
 
 ```text
 viewer join → controlMode=view
-host set_control(peer, interact) → só esse peer envia input no DataChannel
+host/panel set_control(peer, interact) → só esse peer envia input no DataChannel
 companion injeta no SO se peer == piloto
-host set_control(peer, view) → revoga
+set_control(peer, view) → revoga
 ```
+
+Quando o companion assume a mídia, o browser host autenticado passa a `role=panel` (sem fechar o WS).
 
 ## Fases
 
 | Fase | Entrega |
 | --- | --- |
-| 0 | Este documento |
-| 1 | `controlMode` na API/WS, UI promover/rebaixar, badge no viewer, lista **Recentes** (últimos assistidos) |
-| 2 | Companion Windows: captura, DataChannel, SendInput, check/update de versão |
-| 3 | Multi-monitor/DPI, audit, update obrigatório opcional, limites UAC — ver [controle-remoto-limites.md](controle-remoto-limites.md) |
-| 4+ | Linux companion, clipboard/arquivo, viewer pede controle, inventário tipo AnyDesk |
+| 0 | Documento |
+| 1 | `controlMode`, UI promover, Recentes |
+| 2 | Companion Windows + DataChannel + update |
+| 3 | Audit, limites UAC, versionamento |
+| A–D | Companion console completo, persistência, deep link, web como painel leve |
 
-Companion: código em `apps/companion` (Electron Windows). Instalador em `deploy/companion/`.
+## API / WS
 
-## API / WS (Fase 1+)
+- `controlMode: 'view' | 'interact'`
+- Host ou **panel** → `set_control`
+- Só o host de mídia → `slot_add` / ofertas WebRTC
+- Input: **DataChannel** `watchdesk-input`
 
-- Por viewer em runtime: `controlMode: 'view' | 'interact'` (default `view` no join).
-- Host → API: `set_control { peerId, mode }`
-- Broadcast: `control_changed { peerId, mode, displayName }`
-- Input de ponteiro/teclado: **DataChannel** (não WS), coords normalizadas 0–1.
-- Audit (Fase 3): registro de quem promoveu/revogou.
+## Companion
 
-## Recentes (viewer)
+- Código: `apps/companion`
+- Persistência: `userData/companion-settings.json`
+- Instalador: `deploy/companion/`
 
-- Home: lista das últimas salas em que o `device_id` entrou como viewer.
-- Persistência no servidor; limite curto (ex. 10).
-- Clique reabre a sala; se a chave regenerou, pedir o link de novo.
+## Fora de escopo
 
-## Companion (Fase 2+)
-
-- Binário no PC do host (não no container do servidor).
-- Mesma sala/sessão host; versão reportada ao conectar.
-- `GET`/`latest.json` na LAN com versão + URL do instalador.
-- Só injeta input se `controlMode === interact` para aquele peer.
-
-## Fora de escopo do MVP
-
-- Controle só com página web no host (sem companion).
-- Multi-piloto simultâneo.
-- Transmitir web + exe ao mesmo tempo.
-- Expor companion fora do modelo alias/LAN.
-- Paridade TeamViewer no dia 1.
-
-## Limites conhecidos (documentar na Fase 3)
-
-- UAC / tela de login Windows podem bloquear input.
-- DPI e multi-monitor exigem mapeamento explícito.
-- TURN aumenta latência do DataChannel vs P2P puro.
+- Multi-piloto
+- Transmitir web + companion juntos
+- Wayland puro (input)

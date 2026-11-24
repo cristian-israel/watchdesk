@@ -1,44 +1,70 @@
 'use strict';
 
 /**
- * Watchdesk Companion (Electron) — Windows + Linux.
+ * Watchdesk Companion — console do host (salas, convite, transmitir, controle).
  *
- * Fluxo:
- * 1. Checa /api/companion/version (banner se desatualizado).
- * 2. Login host (POST /api/rooms/:slug/host) com cookie jar.
- * 3. WS hello clientKind=companion + captura desktopCapturer.
- * 4. DataChannel watchdesk-input → applyInput (Win user32 / Linux xdotool).
+ * Env (opcional): WATCHDESK_ORIGIN, WATCHDESK_ROOM, WATCHDESK_HOST_KEY,
+ * WATCHDESK_ELECTRON_NO_SANDBOX, WATCHDESK_XDOTOOL
  *
- * Env:
- *   WATCHDESK_ORIGIN=https://watchdesk-giganet.ilumea.com.br
- *   WATCHDESK_ROOM=slug
- *   WATCHDESK_HOST_KEY=...
+ * Deep link: watchdesk://connect?origin=https://…&room=slug&transmit=1
  */
 
-const { app, BrowserWindow, desktopCapturer, ipcMain, shell, screen, session } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  desktopCapturer,
+  ipcMain,
+  shell,
+  screen,
+  session,
+  clipboard,
+} = require('electron');
 const path = require('path');
 const { LOCAL_VERSION, cmpSemver, fetchLatest } = require('./version');
 const { applyInput, setScreenSize, platform } = require('./input');
 const { parseInput } = require('./protocol');
+const store = require('./store');
+const http = require('./http');
 
-// NixOS / sandboxes restritivos
 if (process.env.WATCHDESK_ELECTRON_NO_SANDBOX === '1' || platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-dev-shm-usage');
 }
 
+const PROTOCOL = 'watchdesk';
+
 /** @type {BrowserWindow | null} */
 let win = null;
 let updateInfo = null;
-/** @type {string} */
-let sessionCookie = '';
-/** @type {string} */
-let deviceCookie = '';
+/** @type {object | null} */
+let pendingDeepLink = null;
+
+function parseDeepLink(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== `${PROTOCOL}:`) return null;
+    const origin = u.searchParams.get('origin') || '';
+    const room = u.searchParams.get('room') || '';
+    const hostKey = u.searchParams.get('hostKey') || u.searchParams.get('key') || '';
+    const transmit = ['1', 'true', 'yes'].includes(
+      String(u.searchParams.get('transmit') || '').toLowerCase(),
+    );
+    return { origin, room, hostKey, transmit };
+  } catch {
+    return null;
+  }
+}
+
+function sendToRenderer(channel, payload) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 480,
-    height: 640,
+    width: 440,
+    height: 720,
+    minWidth: 380,
+    minHeight: 560,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -46,34 +72,112 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'ui.html'));
+  win.webContents.on('did-finish-load', () => {
+    if (pendingDeepLink) {
+      sendToRenderer('companion:deep-link', pendingDeepLink);
+      pendingDeepLink = null;
+    }
+  });
+}
+
+async function syncElectronCookies(origin) {
+  const base = String(origin || '').replace(/\/$/, '');
+  if (!base) return;
+  const u = new URL(base);
+  const sess = http.sessionCookieValue();
+  const device = http.deviceCookieValue();
+  if (sess) {
+    await session.defaultSession.cookies.set({
+      url: base,
+      name: 'wd_session',
+      value: sess.replace(/^wd_session=/, ''),
+      path: '/',
+      secure: u.protocol === 'https:',
+      httpOnly: true,
+    });
+  }
+  if (device) {
+    await session.defaultSession.cookies.set({
+      url: base,
+      name: 'wd_device',
+      value: device.replace(/^wd_device=/, ''),
+      path: '/',
+      secure: u.protocol === 'https:',
+      httpOnly: true,
+    });
+  }
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    const link = argv.find((a) => String(a).startsWith(`${PROTOCOL}:`));
+    const parsed = link ? parseDeepLink(link) : null;
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+      if (parsed) sendToRenderer('companion:deep-link', parsed);
+    } else if (parsed) {
+      pendingDeepLink = parsed;
+    }
+  });
 }
 
 app.whenReady().then(async () => {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient(PROTOCOL);
+  }
+
   const primary = screen.getPrimaryDisplay().size;
   setScreenSize(primary.width, primary.height);
 
+  const settings = store.load();
+  if (settings.deviceCookie) {
+    http.setCookiesFromStore(
+      settings.deviceCookie.startsWith('wd_device=')
+        ? settings.deviceCookie
+        : `wd_device=${settings.deviceCookie}`,
+    );
+  }
+
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const jar = [deviceCookie, sessionCookie].filter(Boolean).join('; ');
+    const jar = http.cookieHeader();
     if (jar && /\/api\/ws/.test(details.url)) {
       details.requestHeaders.Cookie = jar;
     }
     callback({ requestHeaders: details.requestHeaders });
   });
 
-  const origin = process.env.WATCHDESK_ORIGIN || '';
+  const origin = process.env.WATCHDESK_ORIGIN || settings.origin || '';
   if (origin) {
     updateInfo = await fetchLatest(origin);
   }
+
+  const bootLink = process.argv.find((a) => String(a).startsWith(`${PROTOCOL}:`));
+  if (bootLink) pendingDeepLink = parseDeepLink(bootLink);
+
   createWindow();
+});
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const parsed = parseDeepLink(url);
+  if (!parsed) return;
+  if (win) sendToRenderer('companion:deep-link', parsed);
+  else pendingDeepLink = parsed;
 });
 
 ipcMain.handle('companion:meta', () => ({
   version: LOCAL_VERSION,
   update: updateInfo,
   outdated:
-    updateInfo && updateInfo.version
-      ? cmpSemver(LOCAL_VERSION, updateInfo.version) < 0
-      : false,
+    updateInfo && updateInfo.version ? cmpSemver(LOCAL_VERSION, updateInfo.version) < 0 : false,
   mandatory:
     updateInfo &&
     updateInfo.mandatory &&
@@ -82,13 +186,14 @@ ipcMain.handle('companion:meta', () => ({
 }));
 
 ipcMain.handle('companion:open-download', async () => {
-  const origin = (process.env.WATCHDESK_ORIGIN || '').replace(/\/$/, '');
-  const path =
+  const settings = store.load();
+  const origin = (process.env.WATCHDESK_ORIGIN || settings.origin || '').replace(/\/$/, '');
+  const p =
     platform === 'linux'
       ? updateInfo?.downloadUrlLinux || updateInfo?.downloadUrl
       : updateInfo?.downloadUrl || updateInfo?.downloadUrlLinux;
-  if (!path) return false;
-  const url = String(path).startsWith('http') ? path : `${origin}${path}`;
+  if (!p) return false;
+  const url = String(p).startsWith('http') ? p : `${origin}${p}`;
   await shell.openExternal(url);
   return true;
 });
@@ -106,88 +211,130 @@ ipcMain.on('companion:input', (_ev, raw) => {
   if (msg) applyInput(msg);
 });
 
-ipcMain.handle('companion:env', () => ({
-  origin: process.env.WATCHDESK_ORIGIN || '',
-  room: process.env.WATCHDESK_ROOM || '',
-  hasHostKey: Boolean(process.env.WATCHDESK_HOST_KEY),
-}));
+ipcMain.handle('companion:settings-get', () => {
+  const s = store.load();
+  return {
+    ...s,
+    origin: process.env.WATCHDESK_ORIGIN || s.origin,
+    room: process.env.WATCHDESK_ROOM || s.lastRoomSlug,
+    hostKey: process.env.WATCHDESK_HOST_KEY || s.lastHostKey,
+  };
+});
 
-function absorbCookies(r) {
-  const raw = r.headers.getSetCookie?.() || [];
-  const list = raw.length ? raw : [r.headers.get('set-cookie')].filter(Boolean);
-  for (const c of list) {
-    const s = String(c).match(/wd_session=[^;]+/);
-    if (s) sessionCookie = s[0];
-    const d = String(c).match(/wd_device=[^;]+/);
-    if (d) deviceCookie = d[0];
+ipcMain.handle('companion:settings-save', (_e, partial) => {
+  const next = store.save(partial || {});
+  if (partial?.deviceCookie) {
+    http.setCookiesFromStore(
+      String(partial.deviceCookie).startsWith('wd_device=')
+        ? partial.deviceCookie
+        : `wd_device=${partial.deviceCookie}`,
+    );
   }
+  return next;
+});
+
+ipcMain.handle('companion:clipboard', (_e, text) => {
+  clipboard.writeText(String(text || ''));
+  return true;
+});
+
+ipcMain.handle('companion:open-external', async (_e, url) => {
+  await shell.openExternal(String(url || ''));
+  return true;
+});
+
+async function ensureName(origin, displayName) {
+  const name = String(displayName || 'Companion').slice(0, 80);
+  await http.api(origin, '/api/me', {
+    method: 'PATCH',
+    body: { displayName: name },
+  });
+  persistDevice(origin);
+  return name;
 }
 
-function cookieHeader() {
-  return [deviceCookie, sessionCookie].filter(Boolean).join('; ');
+function persistDevice(origin) {
+  const device = http.deviceCookieValue();
+  if (!device) return;
+  store.save({
+    origin: String(origin || '').replace(/\/$/, ''),
+    deviceCookie: device.replace(/^wd_device=/, ''),
+  });
 }
+
+ipcMain.handle('companion:fetch-me', async (_e, { origin, displayName }) => {
+  const base = String(origin || '').replace(/\/$/, '');
+  if (!base) throw new Error('Informe a origem HTTPS.');
+  await ensureName(base, displayName);
+  const me = await http.api(base, '/api/me');
+  persistDevice(base);
+  store.save({ origin: base, displayName: me.displayName || displayName });
+  await syncElectronCookies(base);
+  if (me.room?.slug) {
+    updateInfo = await fetchLatest(base);
+  }
+  return me;
+});
+
+ipcMain.handle('companion:create-room', async (_e, { origin, displayName, maxViewers }) => {
+  const base = String(origin || '').replace(/\/$/, '');
+  await ensureName(base, displayName);
+  const data = await http.api(base, '/api/rooms', {
+    method: 'POST',
+    body: { maxViewers: maxViewers || 8 },
+  });
+  persistDevice(base);
+  store.save({
+    origin: base,
+    displayName: data.displayName || displayName,
+    lastRoomSlug: data.room || data.slug,
+    lastHostKey: data.hostInvite || '',
+  });
+  await syncElectronCookies(base);
+  return data;
+});
+
+ipcMain.handle('companion:delete-room', async (_e, { origin }) => {
+  const base = String(origin || '').replace(/\/$/, '');
+  const data = await http.api(base, '/api/me/room', { method: 'DELETE' });
+  store.save({ lastRoomSlug: '', lastHostKey: '' });
+  http.clearSession();
+  return data;
+});
 
 ipcMain.handle('companion:host-login', async (_e, { origin, room, hostKey, displayName }) => {
   const base = String(origin || '').replace(/\/$/, '');
-  const name = String(displayName || 'Companion').slice(0, 80);
-
-  const meRes = await fetch(`${base}/api/me`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(cookieHeader() ? { Cookie: cookieHeader() } : {}),
-    },
-    body: JSON.stringify({ displayName: name }),
-  });
-  absorbCookies(meRes);
-  if (!meRes.ok) {
-    throw new Error((await meRes.text()) || 'Não foi possível definir o nome do companion.');
-  }
-
-  const r = await fetch(`${base}/api/rooms/${encodeURIComponent(room)}/host`, {
+  await ensureName(base, displayName);
+  const data = await http.api(base, `/api/rooms/${encodeURIComponent(room)}/host`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Cookie: cookieHeader(),
-    },
-    body: JSON.stringify({ hostKey: hostKey || '' }),
+    body: { hostKey: hostKey || '' },
   });
-  absorbCookies(r);
-  const text = await r.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-  if (!r.ok) {
-    throw new Error(typeof data === 'string' ? data : data?.message || `HTTP ${r.status}`);
-  }
-  const u = new URL(base);
-  if (sessionCookie) {
-    await session.defaultSession.cookies.set({
-      url: base,
-      name: 'wd_session',
-      value: sessionCookie.replace(/^wd_session=/, ''),
-      path: '/',
-      secure: u.protocol === 'https:',
-      httpOnly: true,
-    });
-  }
-  if (deviceCookie) {
-    await session.defaultSession.cookies.set({
-      url: base,
-      name: 'wd_device',
-      value: deviceCookie.replace(/^wd_device=/, ''),
-      path: '/',
-      secure: u.protocol === 'https:',
-      httpOnly: true,
-    });
-  }
-  return { ok: true, cookie: cookieHeader(), data };
+  persistDevice(base);
+  store.save({
+    origin: base,
+    displayName: data.displayName || displayName,
+    lastRoomSlug: data.room || room,
+    lastHostKey: hostKey || data.hostInvite || store.load().lastHostKey || '',
+  });
+  await syncElectronCookies(base);
+  return { ok: true, cookie: http.cookieHeader(), data };
 });
 
-ipcMain.handle('companion:session-cookie', () => sessionCookie);
+ipcMain.handle('companion:patch-room', async (_e, { origin, room, patch }) => {
+  const base = String(origin || '').replace(/\/$/, '');
+  const data = await http.api(base, `/api/rooms/${encodeURIComponent(room)}`, {
+    method: 'PATCH',
+    body: patch || {},
+  });
+  if (data.hostInvite) store.save({ lastHostKey: data.hostInvite });
+  return data;
+});
+
+ipcMain.handle('companion:session-cookie', () => http.sessionCookieValue());
+
+ipcMain.handle('companion:viewer-link', (_e, { origin, slug, viewerInvite }) =>
+  http.viewerInviteUrl(origin, slug, viewerInvite),
+);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

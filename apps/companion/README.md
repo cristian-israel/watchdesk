@@ -1,6 +1,6 @@
 # Watchdesk Companion
 
-App Electron que transmite a tela e injeta input quando o host promove um espectador a **interagir**.
+Console do **host** no PC do agente: salas, convite, transmissão e controle remoto (promover / revogar). Quem assiste continua no navegador.
 
 ## Requisitos
 
@@ -9,59 +9,46 @@ App Electron que transmite a tela e injeta input quando o host promove um espect
 | Windows 10+ | Electron `desktopCapturer` | user32 / SendKeys |
 | Linux (X11) | Electron `desktopCapturer` | **xdotool** no PATH |
 
-- Node 18+
-- Sala Watchdesk na LAN (HTTPS)
+## Uso (agente)
 
-Pacote **fora** do workspace pnpm raiz. Instale aqui dentro.
+1. Baixe o AppImage / `.exe` em `https://<host>/companion/…` (ou Início na web).
+2. Abra o app → origem HTTPS + nome → **Entrar / sincronizar**.
+3. **Criar sala** (se ainda não tiver) → **Copiar link espectador**.
+4. **Conectar e transmitir** → na lista, **Promover** quem pode interagir.
+
+Não precisa da web para operar. O navegador no mesmo PC é painel opcional.
 
 ## Desenvolvimento (NixOS / Linux)
 
 ```bash
 cd apps/companion
 pnpm install
-# NixOS: se o Electron reclamar de sandbox:
-export WATCHDESK_ELECTRON_NO_SANDBOX=1
-WATCHDESK_ORIGIN=https://watchdesk-giganet.ilumea.com.br pnpm start
+nix-shell -p electron xdotool --run \
+  'WATCHDESK_ELECTRON_NO_SANDBOX=1 WATCHDESK_ORIGIN=https://watchdesk-giganet.ilumea.com.br electron . --disable-dev-shm-usage --no-sandbox'
 ```
 
-Dependência de runtime Linux: `xdotool` (ex. `nix-shell -p xdotool` ou pacote do distro).
+## Persistência
 
-## Build
+Em `userData/companion-settings.json`: origem, nome, cookie do aparelho, última sala/chave.
+
+## Deep link
+
+```text
+watchdesk://connect?origin=https://watchdesk-giganet.ilumea.com.br&room=SLUG&transmit=1
+```
+
+Opcional: `hostKey=` se for sala de outro aparelho.
+
+## Build / publicar
 
 ```bash
-# Linux AppImage (nesta máquina)
-pnpm pack:linux
-
-# Windows .exe (precisa Wine ou build em Windows/CI)
-pnpm pack:win
-
-# Publicar no deploy local
-chmod +x ../../deploy/scripts/publicar-companion.sh
+pnpm pack:linux   # ou pack:win
 ../../deploy/scripts/publicar-companion.sh
+# rsync deploy/companion/ → /opt/watchdesk/companion/
 ```
-
-Artefatos em `deploy/companion/`:
-
-- `watchdesk-companion-setup.exe` (Windows)
-- `watchdesk-companion.AppImage` (Linux)
-- `latest.json`
-
-No servidor: rsync da pasta `deploy/companion/` → `/opt/watchdesk/companion/` e Caddy já serve `/companion/*`.
-
-## Download na LAN
-
-- Windows: `https://<seu-host>/companion/watchdesk-companion-setup.exe`
-- Linux: `https://<seu-host>/companion/watchdesk-companion.AppImage`
-- Meta: `https://<seu-host>/api/companion/version` ou `/companion/latest.json`
-
-## Atualização
-
-1. Companion chama `GET /api/companion/version`.
-2. Se local &lt; latest → banner + botão Atualizar.
-3. `COMPANION_MANDATORY=true` bloqueia transmitir abaixo de `minVersion`.
 
 ## Regras
 
-- Um publisher por sessão: com companion ativo, não use “Compartilhar tela” no browser.
-- Input só se o peer for o piloto (`controlMode=interact`).
-- Botão **Revogar controle** no companion corta o piloto.
+- Um publisher por sessão: companion **ou** browser, não os dois.
+- Input só para o piloto (`controlMode=interact`).
+- Linux: `WATCHDESK_XDOTOOL=/caminho/xdotool` se não estiver no PATH.

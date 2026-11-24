@@ -140,32 +140,29 @@ export function HomePage() {
                 <DialogHeader>
                   <DialogTitle>Como usar o companion</DialogTitle>
                   <DialogDescription>
-                    Use no computador que vai transmitir a tela. Quem só assiste continua no
-                    navegador.
+                    No PC do agente o app faz tudo: criar sala, copiar convite, transmitir e
+                    promover. Quem assiste usa só o navegador.
                   </DialogDescription>
                 </DialogHeader>
                 <ol className="list-decimal space-y-2 pl-4 text-sm text-foreground">
                   <li>Baixe o instalador do seu sistema (Windows ou Linux) neste card.</li>
                   <li>
-                    Instale ou execute o app no PC do agente.
+                    Instale ou execute no PC do agente.
                     <span className="block text-muted-foreground">
-                      Linux (AppImage): dê permissão de execução (
-                      <code className="rounded bg-muted px-1 py-0.5 text-xs">chmod +x</code>) e rode
-                      o arquivo. Precisa de <code className="rounded bg-muted px-1 py-0.5 text-xs">xdotool</code>{' '}
-                      no PATH.
+                      Linux (AppImage):{' '}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">chmod +x</code> e rode.
+                      Precisa de <code className="rounded bg-muted px-1 py-0.5 text-xs">xdotool</code>.
                     </span>
                   </li>
-                  <li>Abra o companion e entre na sala (cole o link ou o id).</li>
                   <li>
-                    Transmita pelo companion. No mesmo PC, o navegador serve só de painel (promover
-                    espectador a interagir, chat).
+                    No companion: informe a origem HTTPS e o nome → Entrar / sincronizar → Criar
+                    sala (se ainda não tiver).
                   </li>
+                  <li>Copie o link do espectador e envie a quem vai assistir.</li>
+                  <li>Conectar e transmitir. Promova o piloto na lista do próprio app.</li>
                   <li>
-                    Não use “Compartilhar tela” no browser ao mesmo tempo que o companion.
-                  </li>
-                  <li>
-                    Controle remoto: o host promove o espectador a interagir; no companion dá para
-                    revogar.
+                    O navegador no PC do agente é opcional (painel leve). Não compartilhe tela pelo
+                    browser junto com o companion.
                   </li>
                 </ol>
                 {companion?.notes ? (

@@ -500,17 +500,24 @@ export function HostPage() {
 
           {transmitMode === 'companion' || companionPanel ? (
             <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              Companion ativo: a captura sai do app. Use este painel para promover espectadores a
-              interagir e ajustar a sala. Não compartilhe tela pelo browser ao mesmo tempo.
+              Painel leve: o Companion está transmitindo. Aqui você ainda pode promover, chat e
+              segurança. Preferência: fazer isso no próprio app.
             </p>
           ) : (
             <>
+              <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                Controle remoto com mouse/teclado no desktop exige o{' '}
+                <a className="text-primary underline" href="/">
+                  Companion
+                </a>
+                . Compartilhar tela pelo browser é só visualização (sem injeção no SO).
+              </p>
               <Button type="button" disabled={shares.size >= MAX_SLOTS} onClick={() => void shareScreen()}>
-                Compartilhar uma tela
+                Compartilhar uma tela (só ver)
               </Button>
               {companionMeta ? (
                 <p className="text-sm text-muted-foreground">
-                  Controle remoto: baixe o companion{' '}
+                  Baixar companion:{' '}
                   <a className="text-primary underline" href={companionMeta.downloadUrl || '#'}>
                     Windows
                   </a>

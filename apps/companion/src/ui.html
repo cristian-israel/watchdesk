@@ -11,23 +11,34 @@
       }
       body {
         margin: 0;
-        padding: 16px;
+        padding: 14px 16px 20px;
       }
       h1 {
-        font-size: 1.1rem;
-        margin: 0 0 8px;
+        font-size: 1.05rem;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #9aa0a6;
+        margin: 14px 0 6px;
       }
       p,
       label {
-        font-size: 0.85rem;
+        font-size: 0.82rem;
         color: #9aa0a6;
+      }
+      label {
+        display: block;
+        margin-top: 6px;
       }
       input,
       button,
       select {
         width: 100%;
         box-sizing: border-box;
-        margin: 4px 0 10px;
+        margin: 4px 0 8px;
         padding: 8px 10px;
         border-radius: 8px;
         border: 1px solid #3c4043;
@@ -41,10 +52,26 @@
         border: none;
         font-weight: 600;
       }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
       button.secondary {
         background: transparent;
         color: #8ab4f8;
         border: 1px solid #3c4043;
+      }
+      button.danger {
+        background: transparent;
+        color: #f28b82;
+        border: 1px solid #5c3030;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row > * {
+        flex: 1;
       }
       .banner {
         background: #3c2f00;
@@ -52,8 +79,15 @@
         color: #fdd663;
         padding: 10px;
         border-radius: 8px;
-        margin-bottom: 12px;
-        font-size: 0.85rem;
+        margin-bottom: 10px;
+        font-size: 0.82rem;
+      }
+      .card {
+        border: 1px solid #2a2e36;
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #171a20;
       }
       .ok {
         color: #81c995;
@@ -61,14 +95,49 @@
       .err {
         color: #f28b82;
       }
+      .muted {
+        color: #9aa0a6;
+        font-size: 0.78rem;
+      }
+      #viewers {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      #viewers li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 4px 0;
+        padding: 6px 8px;
+        border: 1px solid #333;
+        border-radius: 8px;
+        font-size: 0.82rem;
+      }
+      #viewers button {
+        width: auto;
+        margin: 0;
+        padding: 4px 8px;
+        font-size: 12px;
+      }
       #log {
         white-space: pre-wrap;
-        font-size: 0.75rem;
-        max-height: 160px;
+        font-size: 0.72rem;
+        max-height: 120px;
         overflow: auto;
         background: #0c0e12;
         padding: 8px;
         border-radius: 8px;
+      }
+      .hidden {
+        display: none !important;
+      }
+      code {
+        font-size: 0.75rem;
+        background: #0c0e12;
+        padding: 1px 4px;
+        border-radius: 4px;
       }
     </style>
   </head>
@@ -76,22 +145,67 @@
     <h1>Watchdesk Companion <span id="ver"></span></h1>
     <div id="update" class="banner" hidden></div>
     <p id="status" class="ok">Pronto.</p>
-    <label>Origem (HTTPS da sala)</label>
-    <input id="origin" placeholder="https://watchdesk-giganet.ilumea.com.br" />
-    <label>Slug da sala</label>
-    <input id="room" />
-    <label>Chave do host</label>
-    <input id="hostKey" type="password" />
-    <label>Tela</label>
-    <select id="source"></select>
-    <button id="refreshSources" class="secondary" type="button">Atualizar telas</button>
-    <button id="connect" type="button">Conectar e transmitir</button>
-    <button id="stop" class="secondary" type="button" disabled>Parar</button>
-    <p>Piloto (interagir): <span id="pilot">ninguém</span></p>
-    <button id="revoke" class="secondary" type="button" disabled>Revogar controle</button>
-    <label style="margin-top:10px">Espectadores</label>
-    <ul id="viewers" style="list-style:none;padding:0;margin:0 0 8px"></ul>
-    <p id="hint" style="margin-top:8px">Linux: precisa do <code>xdotool</code> no PATH para injetar mouse/teclado. O navegador do host pode ficar aberto como painel.</p>
+
+    <div class="card" id="setupCard">
+      <h2 style="margin-top: 0">Conta neste aparelho</h2>
+      <label>Origem (HTTPS)</label>
+      <input id="origin" placeholder="https://watchdesk-giganet.ilumea.com.br" />
+      <label>Seu nome</label>
+      <input id="displayName" placeholder="Ex.: PC recepção" />
+      <button id="btnSync" type="button">Entrar / sincronizar</button>
+      <p class="muted">O aparelho fica vinculado à sala. Não precisa da web para operar.</p>
+    </div>
+
+    <div class="card hidden" id="roomCard">
+      <h2 style="margin-top: 0">Sala</h2>
+      <p id="roomSummary" class="muted">Nenhuma sala neste aparelho.</p>
+      <div class="row" id="roomActionsCreate">
+        <button id="btnCreate" type="button">Criar sala</button>
+      </div>
+      <div id="roomActionsOwned" class="hidden">
+        <div class="row">
+          <button id="btnCopyInvite" class="secondary" type="button">Copiar link espectador</button>
+          <button id="btnOpenInvite" class="secondary" type="button">Abrir link</button>
+        </div>
+        <label>Máx. espectadores (1–8)</label>
+        <div class="row">
+          <input id="maxViewers" type="number" min="1" max="8" value="8" />
+          <button id="btnSaveMax" class="secondary" type="button">Salvar</button>
+        </div>
+        <div class="row">
+          <button id="btnRegenViewer" class="secondary" type="button">Regenerar link</button>
+          <button id="btnToggleActive" class="secondary" type="button">Desativar sala</button>
+        </div>
+        <button id="btnDeleteRoom" class="danger" type="button">Excluir sala</button>
+        <details style="margin-top: 8px">
+          <summary class="muted">Avançado (outro PC / chave host)</summary>
+          <label>Slug</label>
+          <input id="room" readonly />
+          <label>Chave do host</label>
+          <input id="hostKey" type="password" />
+          <button id="btnCopyHostKey" class="secondary" type="button">Copiar chave host</button>
+        </details>
+      </div>
+    </div>
+
+    <div class="card hidden" id="txCard">
+      <h2 style="margin-top: 0">Transmitir</h2>
+      <label>Tela</label>
+      <select id="source"></select>
+      <button id="refreshSources" class="secondary" type="button">Atualizar telas</button>
+      <button id="connect" type="button">Conectar e transmitir</button>
+      <button id="stop" class="secondary" type="button" disabled>Parar</button>
+      <p class="muted">Linux: <code>xdotool</code> no PATH para mouse/teclado remoto.</p>
+    </div>
+
+    <div class="card hidden" id="controlCard">
+      <h2 style="margin-top: 0">Controle remoto</h2>
+      <p>Piloto: <span id="pilot">ninguém</span></p>
+      <button id="revoke" class="secondary" type="button" disabled>Revogar controle</button>
+      <label style="margin-top: 8px">Espectadores</label>
+      <ul id="viewers"></ul>
+    </div>
+
     <div id="log"></div>
     <script src="./renderer.js"></script>
   </body>

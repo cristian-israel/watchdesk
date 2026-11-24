@@ -3,7 +3,7 @@
 /** Versão do companion publicada na LAN (override via env). */
 function companionLatest() {
   return {
-    version: process.env.COMPANION_VERSION || '0.1.0',
+    version: process.env.COMPANION_VERSION || '0.2.0',
     minVersion: process.env.COMPANION_MIN_VERSION || '0.1.0',
     downloadUrl: process.env.COMPANION_DOWNLOAD_URL || '/companion/watchdesk-companion-setup.exe',
     downloadUrlLinux:
