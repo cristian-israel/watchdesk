@@ -21,7 +21,14 @@ import { inviteKeyFromHash } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
-import { peerKey, type SignalInbound, type SignalOutbound } from '@/lib/signal'
+import { bindRemoteInput } from '@/lib/remote-input'
+import {
+  peerKey,
+  type ControlMode,
+  type RemoteInputEvent,
+  type SignalInbound,
+  type SignalOutbound,
+} from '@/lib/signal'
 
 type TileEntry = {
   name: string
@@ -42,6 +49,8 @@ export function SalaPage() {
   const [waiting, setWaiting] = useState(true)
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
+  const [controlMode, setControlMode] = useState<ControlMode>('view')
+  const [selfPeerId, setSelfPeerId] = useState('')
 
   useImmersive(active)
 
@@ -50,6 +59,12 @@ export function SalaPage() {
   const tilesRef = useRef(new Map<number, TileEntry>())
   const gridRef = useRef<HTMLDivElement>(null)
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+  const controlModeRef = useRef(controlMode)
+  controlModeRef.current = controlMode
+  const selfPeerIdRef = useRef(selfPeerId)
+  selfPeerIdRef.current = selfPeerId
+  const inputDcRef = useRef<RTCDataChannel | null>(null)
+  const unbindInputRef = useRef<(() => void) | null>(null)
 
   const { send } = useSignal(
     active,
@@ -220,6 +235,27 @@ export function SalaPage() {
     }
   }
 
+  function sendRemoteInput(ev: RemoteInputEvent) {
+    if (controlModeRef.current !== 'interact') return
+    const dc = inputDcRef.current
+    if (!dc || dc.readyState !== 'open') return
+    try {
+      dc.send(JSON.stringify(ev))
+    } catch {
+      /* ok */
+    }
+  }
+
+  function syncInputBinding() {
+    unbindInputRef.current?.()
+    unbindInputRef.current = null
+    if (controlModeRef.current !== 'interact') return
+    const first = [...tilesRef.current.values()][0]
+    if (!first) return
+    unbindInputRef.current = bindRemoteInput(first.tile, sendRemoteInput)
+    first.tile.focus()
+  }
+
   async function handleOffer(from: string, slot: number, sdp: string) {
     const tile = ensureTile(slot)
     if (!tile) return
@@ -230,12 +266,22 @@ export function SalaPage() {
     const pc = new RTCPeerConnection({ iceServers: iceRef.current })
     peersRef.current.set(key, pc)
 
+    pc.ondatachannel = (ev) => {
+      if (ev.channel.label !== 'watchdesk-input') return
+      inputDcRef.current = ev.channel
+      ev.channel.onclose = () => {
+        if (inputDcRef.current === ev.channel) inputDcRef.current = null
+      }
+      syncInputBinding()
+    }
+
     pc.ontrack = (e) => {
       const stream = e.streams[0] || new MediaStream([e.track])
       tile.video.srcObject = stream
       void tile.video.play().catch(() => {
         /* autoplay — muted+playsinline cobrem o caso normal */
       })
+      syncInputBinding()
     }
     pc.onicecandidate = (ev) => {
       sendRef.current({
@@ -263,7 +309,24 @@ export function SalaPage() {
     if (msg.type === 'welcome') {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
+      setSelfPeerId(msg.peerId)
+      setControlMode(msg.controlMode || 'view')
       syncSlots(msg.slots || [])
+      return
+    }
+    if (msg.type === 'control_changed') {
+      if (msg.peerId === selfPeerIdRef.current) {
+        setControlMode(msg.mode)
+        controlModeRef.current = msg.mode
+        syncInputBinding()
+        toast.message(
+          msg.mode === 'interact' ? 'Você pode interagir na tela' : 'Modo só visualização',
+        )
+      } else if (msg.mode === 'interact') {
+        setControlMode('view')
+        controlModeRef.current = 'view'
+        syncInputBinding()
+      }
       return
     }
     if (msg.type === 'error') {
@@ -369,6 +432,9 @@ export function SalaPage() {
   }
 
   function teardown() {
+    unbindInputRef.current?.()
+    unbindInputRef.current = null
+    inputDcRef.current = null
     peersRef.current.forEach((pc) => pc.close())
     peersRef.current.clear()
     tilesRef.current.forEach((t) => t.tile.remove())
@@ -376,6 +442,7 @@ export function SalaPage() {
     gridRef.current?.replaceChildren()
     setChatFeed([])
     setWaiting(true)
+    setControlMode('view')
   }
 
   async function leave() {
@@ -445,7 +512,14 @@ export function SalaPage() {
     >
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
-          <b className="font-medium">Sala {room}</b>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <b className="font-medium">Sala {room}</b>
+            <span className="text-xs text-muted-foreground">
+              {controlMode === 'interact'
+                ? 'Você pode interagir — clique na tela'
+                : 'Somente visualização'}
+            </span>
+          </div>
           <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>
             Sair
           </Button>

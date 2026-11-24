@@ -25,6 +25,7 @@ x-caddy-base: &caddy_base
     - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     - ./caddy/upstream.caddy:/etc/caddy/upstream.caddy:ro
     - ./site:/opt:ro
+    - ./companion:/opt/companion:ro
     - caddy_data:/data
     - caddy_config:/config
   logging: *rotacao_logs

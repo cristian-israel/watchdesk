@@ -91,6 +91,7 @@ test('iceServers inclui TURN com secret e host', () => {
 });
 
 test('originAllowed: localhost, mesmo host, sem origin', () => {
+  assert.equal(originAllowed({ headers: { origin: 'null' } }), true);
   assert.equal(originAllowed({ headers: {} }), true);
   assert.equal(
     originAllowed({ headers: { origin: 'http://localhost:7130', host: 'localhost:7030' } }),

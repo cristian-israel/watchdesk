@@ -11,6 +11,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { initDb, getPool, healthCheck } = require('./db');
+const { companionLatest, cmpSemver } = require('./companion-version');
 const {
   ROOM_RE,
   KEY_MIN_CREATE,
@@ -29,6 +30,8 @@ const {
   originAllowed,
   readJson,
 } = require('./util');
+
+const RECENT_LIMIT = 10;
 
 const HELP = `
 Uso: node src/index.js [opções]
@@ -96,6 +99,8 @@ const live = new Map();
  *   host: Client | null,
  *   slots: Set<number>,
  *   viewers: Map<string, Client>,
+ *   pilotPeerId: string | null,
+ *   transmitMode: 'web' | 'companion',
  * }} RuntimeRoom
  *
  * @typedef {{
@@ -106,6 +111,9 @@ const live = new Map();
  *   displayName: string,
  *   sessionId: string,
  *   deviceId: string,
+ *   controlMode: 'view' | 'interact',
+ *   clientKind: 'web' | 'companion',
+ *   companionVersion: string,
  * }} Client
  */
 
@@ -120,14 +128,73 @@ function ensureLive(row) {
       host: null,
       slots: new Set(),
       viewers: new Map(),
+      pilotPeerId: null,
+      transmitMode: 'web',
     };
     live.set(row.slug, r);
   } else {
     r.roomDbId = row.id;
     r.maxViewers = row.max_viewers;
     r.active = Boolean(row.active);
+    if (!('pilotPeerId' in r)) r.pilotPeerId = null;
+    if (!('transmitMode' in r)) r.transmitMode = 'web';
   }
   return r;
+}
+
+async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
+  if (!deviceId || !slug) return;
+  await getPool().query(
+    `INSERT INTO recent_rooms (device_id, room_slug, room_label, viewer_invite, last_seen_at)
+     VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))
+     ON DUPLICATE KEY UPDATE
+       room_label = VALUES(room_label),
+       viewer_invite = IF(VALUES(viewer_invite) = '', viewer_invite, VALUES(viewer_invite)),
+       last_seen_at = VALUES(last_seen_at)`,
+    [deviceId, slug, String(label || '').slice(0, 80), String(viewerInvite || '').slice(0, 128)],
+  );
+  const [rows] = await getPool().query(
+    `SELECT room_slug FROM recent_rooms WHERE device_id = ? ORDER BY last_seen_at DESC`,
+    [deviceId],
+  );
+  if (rows.length > RECENT_LIMIT) {
+    const drop = rows.slice(RECENT_LIMIT).map((r) => r.room_slug);
+    const ph = drop.map(() => '?').join(',');
+    await getPool().query(
+      `DELETE FROM recent_rooms WHERE device_id = ? AND room_slug IN (${ph})`,
+      [deviceId, ...drop],
+    );
+  }
+}
+
+async function listRecentRooms(deviceId) {
+  const [rows] = await getPool().query(
+    `SELECT room_slug AS slug, room_label AS label, viewer_invite AS viewerInvite, last_seen_at AS lastSeenAt
+     FROM recent_rooms WHERE device_id = ? ORDER BY last_seen_at DESC LIMIT ?`,
+    [deviceId, RECENT_LIMIT],
+  );
+  return rows.map((r) => ({
+    slug: r.slug,
+    label: r.label || '',
+    viewerInvite: r.viewerInvite || '',
+    lastSeenAt: r.lastSeenAt,
+  }));
+}
+
+async function insertControlAudit(roomId, hostDeviceId, peerId, displayName, mode) {
+  try {
+    await getPool().query(
+      `INSERT INTO control_audit (room_id, host_device_id, target_peer_id, target_display_name, mode)
+       VALUES (?, ?, ?, ?, ?)`,
+      [roomId, hostDeviceId || null, peerId, String(displayName || '').slice(0, 80), mode],
+    );
+  } catch (e) {
+    console.error('control_audit', e);
+  }
+}
+
+function controlModeOf(client) {
+  return client.controlMode === 'interact' ? 'interact' : 'view';
 }
 
 const { blocked, noteFailure } = createRateLimiter();
@@ -403,12 +470,60 @@ function slotList(room) {
 function roster(room) {
   const list = [];
   if (room.host) {
-    list.push({ peerId: room.host.peerId, role: 'host', displayName: room.host.displayName });
+    list.push({
+      peerId: room.host.peerId,
+      role: 'host',
+      displayName: room.host.displayName,
+      clientKind: room.host.clientKind || 'web',
+    });
   }
   for (const v of room.viewers.values()) {
-    list.push({ peerId: v.peerId, role: 'viewer', displayName: v.displayName });
+    list.push({
+      peerId: v.peerId,
+      role: 'viewer',
+      displayName: v.displayName,
+      controlMode: controlModeOf(v),
+    });
   }
   return list;
+}
+
+function applyControlMode(room, peerId, mode, hostClient) {
+  const target = room.viewers.get(peerId);
+  if (!target) return { ok: false, message: 'Espectador não encontrado.' };
+  const next = mode === 'interact' ? 'interact' : 'view';
+  if (next === 'interact') {
+    for (const v of room.viewers.values()) {
+      if (v.peerId !== peerId && v.controlMode === 'interact') {
+        v.controlMode = 'view';
+        broadcastRoom(room, {
+          type: 'control_changed',
+          peerId: v.peerId,
+          mode: 'view',
+          displayName: v.displayName,
+        });
+      }
+    }
+    room.pilotPeerId = peerId;
+  } else if (room.pilotPeerId === peerId) {
+    room.pilotPeerId = null;
+  }
+  target.controlMode = next;
+  broadcastRoom(room, {
+    type: 'control_changed',
+    peerId,
+    mode: next,
+    displayName: target.displayName,
+  });
+  broadcastRoom(room, { type: 'roster', members: roster(room) });
+  void insertControlAudit(
+    room.roomDbId,
+    hostClient?.deviceId || '',
+    peerId,
+    target.displayName,
+    next,
+  );
+  return { ok: true };
 }
 
 function broadcastRoom(room, msg, exceptPeerId = null) {
@@ -439,6 +554,7 @@ function detachClient(client) {
 
   if (client.role === 'viewer' && room.viewers.has(client.peerId)) {
     room.viewers.delete(client.peerId);
+    if (room.pilotPeerId === client.peerId) room.pilotPeerId = null;
     broadcastRoom(room, {
       type: 'viewer_left',
       peerId: client.peerId,
@@ -494,6 +610,8 @@ async function handleHello(ws, req, ip) {
   }
 
   const peerId = crypto.randomBytes(8).toString('hex');
+  const helloKind = ws.watchdeskHelloKind === 'companion' ? 'companion' : 'web';
+  const companionVersion = String(ws.watchdeskCompanionVersion || '');
   /** @type {Client} */
   const client = {
     ws,
@@ -503,16 +621,36 @@ async function handleHello(ws, req, ip) {
     displayName: session.display_name,
     sessionId: session.id,
     deviceId: session.device_id || '',
+    controlMode: 'view',
+    clientKind: session.role === 'host' ? helloKind : 'web',
+    companionVersion,
   };
   ws.watchdeskClient = client;
 
   if (session.role === 'host') {
+    if (helloKind === 'companion') {
+      const latest = companionLatest();
+      if (companionVersion && cmpSemver(companionVersion, latest.minVersion) < 0 && latest.mandatory) {
+        wsSend(ws, {
+          type: 'error',
+          message: `Companion desatualizado (mínimo ${latest.minVersion}). Atualize para transmitir.`,
+        });
+        ws.close();
+        return;
+      }
+      room.transmitMode = 'companion';
+    } else if (room.transmitMode === 'companion' && room.host?.clientKind === 'companion') {
+      // web host panel ok alongside companion later; keep transmitMode
+    } else {
+      room.transmitMode = 'web';
+    }
     room.host = client;
   } else {
     room.viewers.set(peerId, client);
   }
 
   const history = await loadChat(room.roomDbId);
+  const latest = companionLatest();
 
   wsSend(ws, {
     type: 'welcome',
@@ -523,11 +661,19 @@ async function handleHello(ws, req, ip) {
     slots: slotList(room),
     viewers:
       session.role === 'host'
-        ? [...room.viewers.values()].map((v) => ({ peerId: v.peerId, displayName: v.displayName }))
+        ? [...room.viewers.values()].map((v) => ({
+            peerId: v.peerId,
+            displayName: v.displayName,
+            controlMode: controlModeOf(v),
+          }))
         : undefined,
     iceServers: iceServers(peerId),
     maxViewers: room.maxViewers,
     active: room.active,
+    controlMode: session.role === 'viewer' ? 'view' : undefined,
+    pilotPeerId: room.pilotPeerId,
+    transmitMode: room.transmitMode,
+    companion: session.role === 'host' ? latest : undefined,
   });
   wsSend(ws, { type: 'chat_history', messages: history });
   broadcastRoom(room, { type: 'roster', members: roster(room) });
@@ -541,15 +687,26 @@ async function handleHello(ws, req, ip) {
   } else {
     broadcastRoom(
       room,
-      { type: 'viewer_joined', peerId, displayName: session.display_name },
+      { type: 'viewer_joined', peerId, displayName: session.display_name, controlMode: 'view' },
       peerId,
     );
+    if (client.deviceId) {
+      void touchRecentRoom(client.deviceId, session.slug, roomRow.creator_name || session.slug, '');
+    }
   }
 }
 
 function handleSignal(client, msg) {
   const room = live.get(client.roomSlug);
   if (!room) return;
+
+  if (client.role === 'host' && msg.type === 'set_control') {
+    const peerId = String(msg.peerId || '');
+    const mode = msg.mode === 'interact' ? 'interact' : 'view';
+    const result = applyControlMode(room, peerId, mode, client);
+    if (!result.ok) wsSend(client.ws, { type: 'error', message: result.message });
+    return;
+  }
 
   if (client.role === 'host' && (msg.type === 'slot_add' || msg.type === 'slot_remove')) {
     const slot = Number(msg.slot);
@@ -676,6 +833,8 @@ function attachWs(server) {
 
       if (msg.type === 'hello') {
         if (ws.watchdeskClient) return;
+        ws.watchdeskHelloKind = msg.clientKind === 'companion' ? 'companion' : 'web';
+        ws.watchdeskCompanionVersion = String(msg.version || '');
         void handleHello(ws, req, ip);
         return;
       }
@@ -712,12 +871,33 @@ const handler = async (req, res) => {
     pathname.startsWith('/api/rooms') ||
     pathname === '/api/me' ||
     pathname === '/api/me/room' ||
+    pathname === '/api/me/recent' ||
     pathname === '/api/session' ||
     pathname === '/api/logout' ||
-    pathname === '/api/ice';
+    pathname === '/api/ice' ||
+    pathname === '/api/companion/version';
 
   if (needsRate && blocked(ip)) {
     return send(res, 429, 'Muitas tentativas. Aguarde 1 minuto.', { 'Retry-After': '60' });
+  }
+
+  // GET /api/companion/version — latest companion build (LAN)
+  if (req.method === 'GET' && pathname === '/api/companion/version') {
+    return sendJson(res, 200, companionLatest());
+  }
+
+  // GET /api/me/recent
+  if (req.method === 'GET' && pathname === '/api/me/recent') {
+    const device = await ensureDevice(req, res);
+    const items = await listRecentRooms(device.id);
+    return sendJson(res, 200, { items });
+  }
+
+  // DELETE /api/me/recent
+  if (req.method === 'DELETE' && pathname === '/api/me/recent') {
+    const device = await ensureDevice(req, res);
+    await getPool().query('DELETE FROM recent_rooms WHERE device_id = ?', [device.id]);
+    return sendJson(res, 200, { ok: true });
   }
 
   // GET /api/session
@@ -913,9 +1093,11 @@ const handler = async (req, res) => {
 
       const sess = await createSession(row.id, 'viewer', displayName, device.id);
       setSessionCookie(res, sess.id, req);
+      await touchRecentRoom(device.id, slug, row.creator_name || slug, viewerKey);
       return sendJson(res, 200, {
         ok: true,
         ...sessionPayload({ ...row, role: 'viewer', display_name: displayName }),
+        controlMode: 'view',
       });
     } catch (e) {
       console.error(e);

@@ -26,3 +26,15 @@ pnpm db:down                  # para o MySQL local
 ## Produção
 
 Ver [docs/producao.md](docs/producao.md). Em produção o MySQL é o da rede `infra` do prod-hub, ou o profile `mysql` do Compose de deploy.
+
+## Companion (controle remoto)
+
+Ver [docs/controle-remoto.md](docs/controle-remoto.md) e [apps/companion/README.md](apps/companion/README.md).
+
+```bash
+cd apps/companion && pnpm install --ignore-workspace && pnpm pack:linux
+./deploy/scripts/publicar-companion.sh
+# rsync deploy/companion/ → /opt/watchdesk/companion/
+```
+
+Na LAN: `/companion/watchdesk-companion.AppImage` (Linux) ou `.exe` (Windows).

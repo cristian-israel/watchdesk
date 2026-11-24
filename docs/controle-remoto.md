@@ -1,65 +1,72 @@
-# Controle remoto (ideia futura)
+# Controle remoto
 
-Status: **não implementado**. Registro para quando fizer sentido evoluir o produto.
+Assistência remota na LAN: espectador entra **só vendo**; o host promove a **interagir**. Captura com input no SO exige companion nativo no PC que transmite.
 
-## Situação hoje
+## Decisões de produto
 
-O host transmite com `getDisplayMedia` no browser (WebRTC P2P). O espectador só **vê** (e usa chat). A página web **não** pode injetar mouse/teclado no desktop do sistema — restrição do browser.
+- Entrar na sala = `controlMode: view` (+ chat). Sem mouse/teclado no desktop.
+- Host promove um espectador para `interact` (e rebaixa/corta a qualquer momento).
+- **Um piloto por vez.** No MVP o host promove sozinho (pedido do viewer fica para depois).
+- Link de convite **não** concede interagir.
+- **Arquitetura híbrida:** web (salas, viewer, painel do host) + companion `.exe` no PC remoto.
+- **Um caminho de transmissão por sessão:** web `getDisplayMedia` **ou** companion — nunca os dois publicando vídeo juntos.
+  - Sem companion: só visualizar (como hoje).
+  - Com companion na sala: o exe captura e injeta; o browser no mesmo PC é painel (lista, promover, chat).
+- Companion: **Windows e Linux (X11 / xdotool)**. Viewer permanece no browser.
+- Update do companion: banner + botão Atualizar (usuário confirma; sem force silencioso no MVP).
 
-## Objetivo
-
-Permitir que um espectador autorizado **interaja** no PC de quem está transmitindo (cliques, teclado), no estilo assistência remota leve — sem virar AnyDesk completo de primeira.
-
-## Por que não basta o web atual
-
-| Camada | Browser hoje |
-| --- | --- |
-| Vídeo da tela | Sim (`getDisplayMedia`) |
-| Eventos do viewer → host | Dá via DataChannel |
-| Aplicar input no SO do host | **Não** — precisa processo nativo / Electron / Tauri |
-
-## Direção preferida
-
-Manter o Watchdesk web para sala, sinalização, vídeo e chat. No PC do **host**, um companion opcional (“permitir controle remoto”):
+## Fluxo
 
 ```text
-viewer (mouse/teclado normalizados na tela)
-  → WebRTC DataChannel (mesmo P2P da sala)
-  → companion no host
-  → injeta input no SO (Linux/Windows)
+viewer join → controlMode=view
+host set_control(peer, interact) → só esse peer envia input no DataChannel
+companion injeta no SO se peer == piloto
+host set_control(peer, view) → revoga
 ```
 
-### Regras de produto (rascunho)
+## Fases
 
-- Host precisa **ativar** o controle; default off.
-- Um piloto por vez (ou fila / host escolhe quem controla).
-- Mesma autenticação da sala (sessão / convite); não abrir input só porque alguém tem o link de “assistir”.
-- Indicador claro no host: “fulano está controlando”.
-- Host pode cortar a qualquer momento (e companion pode exigir confirmação periódica).
+| Fase | Entrega |
+| --- | --- |
+| 0 | Este documento |
+| 1 | `controlMode` na API/WS, UI promover/rebaixar, badge no viewer, lista **Recentes** (últimos assistidos) |
+| 2 | Companion Windows: captura, DataChannel, SendInput, check/update de versão |
+| 3 | Multi-monitor/DPI, audit, update obrigatório opcional, limites UAC — ver [controle-remoto-limites.md](controle-remoto-limites.md) |
+| 4+ | Linux companion, clipboard/arquivo, viewer pede controle, inventário tipo AnyDesk |
 
-### Fora de escopo inicial
+Companion: código em `apps/companion` (Electron Windows). Instalador em `deploy/companion/`.
 
-- Controle só via página web sem agente.
+## API / WS (Fase 1+)
+
+- Por viewer em runtime: `controlMode: 'view' | 'interact'` (default `view` no join).
+- Host → API: `set_control { peerId, mode }`
+- Broadcast: `control_changed { peerId, mode, displayName }`
+- Input de ponteiro/teclado: **DataChannel** (não WS), coords normalizadas 0–1.
+- Audit (Fase 3): registro de quem promoveu/revogou.
+
+## Recentes (viewer)
+
+- Home: lista das últimas salas em que o `device_id` entrou como viewer.
+- Persistência no servidor; limite curto (ex. 10).
+- Clique reabre a sala; se a chave regenerou, pedir o link de novo.
+
+## Companion (Fase 2+)
+
+- Binário no PC do host (não no container do servidor).
+- Mesma sala/sessão host; versão reportada ao conectar.
+- `GET`/`latest.json` na LAN com versão + URL do instalador.
+- Só injeta input se `controlMode === interact` para aquele peer.
+
+## Fora de escopo do MVP
+
+- Controle só com página web no host (sem companion).
 - Multi-piloto simultâneo.
-- Transferência de arquivos / clipboard completo (pode vir depois).
-- Expor o companion na internet sem o mesmo modelo LAN/alias do app.
+- Transmitir web + exe ao mesmo tempo.
+- Expor companion fora do modelo alias/LAN.
+- Paridade TeamViewer no dia 1.
 
-## Alternativas descartadas por agora
+## Limites conhecidos (documentar na Fase 3)
 
-- **Só canvas web:** controla um app embutido, não o desktop da empresa.
-- **RDP/VNC atrás do Watchdesk:** outro produto; não reaproveita o fluxo de sala atual.
-
-## Encaixe técnico com o que já existe
-
-- Sinalização e ICE/TURN continuam iguais.
-- Novo canal: DataChannel (ou mensagens tipadas no WS só para “pedir/aceitar controle”; o stream de eventos deve ir no DataChannel para latência).
-- Companion fala com a mesma sala (token de host / device).
-- Deploy do companion: binário ou instalador no PC do host — **não** no container do servidor.
-
-## Pendências antes de implementar
-
-- [ ] Confirmar SO alvo (só Linux da LAN Giga? Windows também?)
-- [ ] UX: quem pede controle, quem aprova, timeout
-- [ ] Modelo de permissão na API (role `pilot` vs `viewer`)
-- [ ] Stack do companion (Tauri vs Electron vs agente mínimo)
-- [ ] Testes de latência na LAN e política se P2P cair no TURN
+- UAC / tela de login Windows podem bloquear input.
+- DPI e multi-monitor exigem mapeamento explícito.
+- TURN aumenta latência do DataChannel vs P2P puro.

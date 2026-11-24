@@ -122,13 +122,15 @@ function forwardedHost(req) {
  */
 function originAllowed(req, publicHost = '') {
   const origin = String(req.headers.origin || '');
-  if (!origin) return true;
+  // Sem Origin, ou companion Electron (file:// / Origin null).
+  if (!origin || origin === 'null') return true;
   let hostname;
   try {
     hostname = new URL(origin).hostname;
   } catch {
     return false;
   }
+  if (!hostname) return true;
   if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
   const host = String(req.headers.host || '').split(':')[0];
   if (hostname === host) return true;
