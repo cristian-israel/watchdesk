@@ -11,9 +11,9 @@ pnpm db:up                    # sobe MySQL local (Docker)
 pnpm dev                      # API :7030 + Vite :7130
 ```
 
-- Salas: http://localhost:7130/salas  
-- Assistir: http://localhost:7130/sala/casa  
-- Transmitir: http://localhost:7130/salas/casa  
+- Salas: http://localhost:7130/salas (cria sala com id opaco + link `#k=…`)  
+- Assistir: cole o link de convite em http://localhost:7130/ (ou abra `/sala/{id}#k=…`)  
+- Transmitir: http://localhost:7130/salas/{id}  
 
 O `.env` na raiz do repo é lido pela API (via `dotenv`), como no Keeptime. Migrations rodam no boot da API.
 

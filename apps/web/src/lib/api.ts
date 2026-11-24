@@ -46,6 +46,8 @@ export type DeviceRoom = {
   active: boolean
   maxViewers: number
   links: string[]
+  viewerInvite: string
+  hostInvite: string
 }
 
 export type Me = {
@@ -62,4 +64,6 @@ export type SessionInfo = {
   active: boolean
   maxViewers: number
   links: string[]
+  viewerInvite?: string
+  hostInvite?: string
 }

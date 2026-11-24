@@ -14,6 +14,7 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/shell/profile', () => ({
   useProfile: () => ({
     room: null,
+    displayName: 'Cris',
     refresh: vi.fn(async () => undefined),
   }),
 }))
@@ -32,19 +33,13 @@ describe('SalasPage', () => {
       </MemoryRouter>,
     )
 
-    await user.type(screen.getByLabelText('Nome da sala'), 'casa')
-    await user.type(screen.getByLabelText('Chave do host'), 'abcdefgh')
-    await user.type(screen.getByLabelText('Chave dos espectadores'), 'ijklmnop')
+    await user.clear(screen.getByLabelText('Máx. espectadores (1–8)'))
+    await user.type(screen.getByLabelText('Máx. espectadores (1–8)'), '4')
     await user.click(screen.getByRole('button', { name: 'Criar sala' }))
 
     expect(mockedApiOrThrow).toHaveBeenCalledWith('/api/rooms', {
       method: 'POST',
-      body: JSON.stringify({
-        slug: 'casa',
-        hostKey: 'abcdefgh',
-        viewerKey: 'ijklmnop',
-        maxViewers: 8,
-      }),
+      body: JSON.stringify({ maxViewers: 4 }),
     })
   })
 })

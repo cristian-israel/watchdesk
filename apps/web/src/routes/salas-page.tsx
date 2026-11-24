@@ -7,43 +7,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
-import { KEY_MIN, ROOM_RE } from '@/lib/room'
+import { viewerInviteUrl } from '@/lib/room'
 import { Pagina } from '@/shell/pagina'
 import { useProfile } from '@/shell/profile'
 
 export function SalasPage() {
   const navigate = useNavigate()
   const action = useActionDialog()
-  const { room, refresh } = useProfile()
-  const [slug, setSlug] = useState('')
-  const [hostKey, setHostKey] = useState('')
-  const [viewerKey, setViewerKey] = useState('')
+  const { room, refresh, displayName } = useProfile()
   const [maxViewers, setMaxViewers] = useState(8)
 
   async function onCreate(e: FormEvent) {
     e.preventDefault()
-    const name = slug.trim()
-    if (!ROOM_RE.test(name)) {
-      action.fail('Nome de sala inválido.')
-      return
-    }
-    if (hostKey.length < KEY_MIN || viewerKey.length < KEY_MIN) {
-      action.fail('As chaves precisam ter no mínimo 8 caracteres.')
-      return
-    }
     await action.run({ pending: 'Criando sala…', success: 'Sala criada' }, async () => {
       await apiOrThrow('/api/rooms', {
         method: 'POST',
-        body: JSON.stringify({
-          slug: name,
-          hostKey,
-          viewerKey,
-          maxViewers,
-        }),
+        body: JSON.stringify({ maxViewers }),
       })
-      setSlug('')
-      setHostKey('')
-      setViewerKey('')
       await refresh()
     })
   }
@@ -82,14 +62,14 @@ export function SalasPage() {
   }
 
   if (room) {
-    const convite = `${location.origin}/sala/${room.slug}`
+    const convite = viewerInviteUrl(room.slug, room.viewerInvite || '')
     return (
       <Pagina titulo="Salas" descricao="Este aparelho já tem uma sala. Exclua para criar outra.">
         <Card>
           <CardHeader>
-            <CardTitle>{room.slug}</CardTitle>
+            <CardTitle>{displayName || room.slug}</CardTitle>
             <CardDescription>
-              {room.active ? 'Sala ativa' : 'Sala desativada'} · máx. {room.maxViewers} espectadores
+              {room.slug} · {room.active ? 'ativa' : 'desativada'} · máx. {room.maxViewers} espectadores
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -123,7 +103,7 @@ export function SalasPage() {
   }
 
   return (
-    <Pagina titulo="Salas" descricao="Uma sala por aparelho. As chaves ficam com você.">
+    <Pagina titulo="Salas" descricao="Uma sala por aparelho. O link de convite já inclui a chave.">
       <Card>
         <CardHeader>
           <CardTitle>Nova sala</CardTitle>
@@ -131,39 +111,6 @@ export function SalasPage() {
         </CardHeader>
         <CardContent>
           <form className="flex flex-col gap-3" onSubmit={(e) => void onCreate(e)} autoComplete="off">
-            <div className="space-y-2">
-              <Label htmlFor="slug">Nome da sala</Label>
-              <Input
-                id="slug"
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
-                pattern="[a-zA-Z0-9_-]{1,40}"
-                required
-                autoFocus
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="hostKey">Chave do host</Label>
-              <Input
-                id="hostKey"
-                type="password"
-                value={hostKey}
-                onChange={(e) => setHostKey(e.target.value)}
-                minLength={KEY_MIN}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="viewerKey">Chave dos espectadores</Label>
-              <Input
-                id="viewerKey"
-                type="password"
-                value={viewerKey}
-                onChange={(e) => setViewerKey(e.target.value)}
-                minLength={KEY_MIN}
-                required
-              />
-            </div>
             <div className="space-y-2">
               <Label htmlFor="maxViewers">Máx. espectadores (1–8)</Label>
               <Input
@@ -174,6 +121,7 @@ export function SalasPage() {
                 value={maxViewers}
                 onChange={(e) => setMaxViewers(Number(e.target.value))}
                 required
+                autoFocus
               />
             </div>
             <Button type="submit" disabled={action.busy} className="w-full">

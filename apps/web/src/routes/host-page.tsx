@@ -17,7 +17,7 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
-import { KEY_MIN } from '@/lib/room'
+import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
 import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
@@ -49,8 +49,8 @@ export function HostPage() {
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [active, setActive] = useState(true)
   const [maxViewers, setMaxViewers] = useState(8)
-  const [newHostKey, setNewHostKey] = useState('')
-  const [newViewerKey, setNewViewerKey] = useState('')
+  const [viewerInvite, setViewerInvite] = useState('')
+  const [hostInvite, setHostInvite] = useState('')
   const [newMax, setNewMax] = useState(8)
 
   const panelRef = useRef(false)
@@ -87,6 +87,8 @@ export function HostPage() {
     setActive(data.active)
     setMaxViewers(data.maxViewers)
     setNewMax(data.maxViewers)
+    if (data.viewerInvite) setViewerInvite(data.viewerInvite)
+    if (data.hostInvite) setHostInvite(data.hostInvite)
     panelRef.current = true
     setPanel(true)
   }
@@ -100,6 +102,8 @@ export function HostPage() {
       return
     }
     if (owned?.slug === room) {
+      if (owned.viewerInvite) setViewerInvite(owned.viewerInvite)
+      if (owned.hostInvite) setHostInvite(owned.hostInvite)
       const host = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/host`, {
         method: 'POST',
         body: JSON.stringify({}),
@@ -331,17 +335,23 @@ export function HostPage() {
 
   async function patchRoom(body: Record<string, unknown>, labels: { pending: string; success: string }) {
     await action.run(labels, async () => {
-      const data = await apiOrThrow<{ message?: string; active?: boolean; maxViewers?: number }>(
-        `/api/rooms/${encodeURIComponent(room)}`,
-        { method: 'PATCH', body: JSON.stringify(body) },
-      )
+      const data = await apiOrThrow<{
+        message?: string
+        active?: boolean
+        maxViewers?: number
+        viewerInvite?: string
+        hostInvite?: string
+      }>(`/api/rooms/${encodeURIComponent(room)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      })
       if (typeof data.active === 'boolean') setActive(data.active)
       if (typeof data.maxViewers === 'number') {
         setMaxViewers(data.maxViewers)
         setNewMax(data.maxViewers)
       }
-      setNewHostKey('')
-      setNewViewerKey('')
+      if (typeof data.viewerInvite === 'string') setViewerInvite(data.viewerInvite)
+      if (typeof data.hostInvite === 'string') setHostInvite(data.hostInvite)
     })
   }
 
@@ -485,13 +495,15 @@ export function HostPage() {
             </h2>
             <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
               <span className="font-mono text-xs break-all">
-                {`${location.origin}/sala/${encodeURIComponent(room)}`}
+                {viewerInviteUrl(room, viewerInvite || owned?.viewerInvite || '')}
               </span>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => void copy(`${location.origin}/sala/${encodeURIComponent(room)}`)}
+                onClick={() =>
+                  void copy(viewerInviteUrl(room, viewerInvite || owned?.viewerInvite || ''))
+                }
               >
                 Copiar
               </Button>
@@ -548,62 +560,47 @@ export function HostPage() {
 
           <section className="space-y-3 rounded-lg border border-border p-3">
             <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Chaves da sala
+              Segurança
             </h2>
-            <form
-              className="flex flex-col gap-2"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (newHostKey.length < KEY_MIN) {
-                  action.fail('A nova chave precisa ter no mínimo 8 caracteres.')
-                  return
-                }
-                void patchRoom({ hostKey: newHostKey }, { pending: 'Trocando chave…', success: 'Chave do host atualizada' })
-              }}
-            >
-              <Label htmlFor="newHost">Nova chave do host</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="newHost"
-                  type="password"
-                  value={newHostKey}
-                  onChange={(e) => setNewHostKey(e.target.value)}
-                  minLength={KEY_MIN}
-                  placeholder="deixe vazio para não alterar"
-                />
-                <Button type="submit" size="sm" variant="outline" disabled={newHostKey.length < KEY_MIN}>
-                  Trocar
-                </Button>
+            <p className="text-sm text-muted-foreground">
+              Regenerar invalida o link antigo. Quem já está na sala como espectador precisa entrar de novo.
+            </p>
+            {hostInvite || owned?.hostInvite ? (
+              <div className="space-y-1">
+                <Label>Chave do host (outro aparelho)</Label>
+                <p className="font-mono text-xs break-all text-muted-foreground">
+                  {hostInvite || owned?.hostInvite}
+                </p>
               </div>
-            </form>
-            <form
-              className="flex flex-col gap-2"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (newViewerKey.length < KEY_MIN) {
-                  action.fail('A nova chave precisa ter no mínimo 8 caracteres.')
-                  return
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void patchRoom(
+                    { regenerateViewerKey: true },
+                    { pending: 'Regenerando…', success: 'Link dos espectadores regenerado' },
+                  )
                 }
-                void patchRoom(
-                  { viewerKey: newViewerKey },
-                  { pending: 'Trocando chave…', success: 'Chave dos espectadores atualizada' },
-                )
-              }}
-            >
-              <Label htmlFor="newViewer">Nova chave dos espectadores</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="newViewer"
-                  type="password"
-                  value={newViewerKey}
-                  onChange={(e) => setNewViewerKey(e.target.value)}
-                  minLength={KEY_MIN}
-                />
-                <Button type="submit" size="sm" variant="outline" disabled={newViewerKey.length < KEY_MIN}>
-                  Trocar
-                </Button>
-              </div>
-            </form>
+              >
+                Regenerar link
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void patchRoom(
+                    { regenerateHostKey: true },
+                    { pending: 'Regenerando…', success: 'Chave do host regenerada' },
+                  )
+                }
+              >
+                Regenerar chave do host
+              </Button>
+            </div>
           </section>
 
         </div>

@@ -1,12 +1,12 @@
 # Produção
 
-Um VPS, um domínio por instalação. HTTP entra pelo Cloudflare Tunnel (`vps-prod`); no host ficam as portas do **Coturn**. Estado das salas fica no **MySQL** já existente na VPS (`DATABASE_URL`).
+Um VPS, um domínio por instalação. HTTP entra pelo Cloudflare Tunnel (`prod-hub`); no host ficam as portas do **Coturn**. Estado das salas fica no **MySQL** já existente na VPS (`DATABASE_URL`).
 
 ## Modelo comum
 
 ```text
 VPS
-  vps-prod/                 ← túnel + rede Docker edge
+  prod-hub/                 ← túnel + rede Docker edge
   {produto}/                ← /opt/watchdesk
       compose.yaml
       .env
@@ -16,7 +16,7 @@ VPS
       site/
 ```
 
-Contrato compartilhado com o Keeptime: túnel só no vps-prod; Caddy em `default` + `edge` com `EDGE_ALIAS`; blue/green; scripts `atualizar-*.sh`.
+Contrato compartilhado com o Keeptime: túnel só no prod-hub; Caddy em `default` + `edge` com `EDGE_ALIAS`; blue/green; scripts `atualizar-*.sh`.
 
 ## Peculiaridades deste produto
 

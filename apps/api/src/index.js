@@ -178,11 +178,26 @@ function lanAddresses() {
   return out;
 }
 
-function viewerLinks(slug) {
+function randomSlug() {
+  return crypto.randomBytes(9).toString('base64url').slice(0, 12);
+}
+
+function randomKey() {
+  return crypto.randomBytes(18).toString('base64url');
+}
+
+function salaPath(slug, viewerInvite) {
+  const base = `/sala/${slug}`;
+  if (!viewerInvite) return base;
+  return `${base}#k=${encodeURIComponent(viewerInvite)}`;
+}
+
+function viewerLinks(slug, viewerInvite = '') {
   // PUBLIC_HOST é IP do TURN — inútil como link HTTP atrás do túnel.
   // PUBLIC_ORIGIN = DNS público do site (ex. https://watchdesk.ilumea.com.br).
-  if (cfg.publicOrigin) return [`${cfg.publicOrigin}/sala/${slug}`];
-  return lanAddresses().map((h) => `http://${h}/sala/${slug}`);
+  const path = salaPath(slug, viewerInvite);
+  if (cfg.publicOrigin) return [`${cfg.publicOrigin}${path}`];
+  return lanAddresses().map((h) => `http://${h}${path}`);
 }
 
 function iceServers(userId = 'anon') {
@@ -215,7 +230,9 @@ function roomSummary(row) {
     slug: row.slug,
     active: Boolean(row.active),
     maxViewers: row.max_viewers,
-    links: viewerLinks(row.slug),
+    links: viewerLinks(row.slug, row.viewer_invite),
+    viewerInvite: row.viewer_invite || '',
+    hostInvite: row.host_invite || '',
   };
 }
 
@@ -311,7 +328,7 @@ async function createSession(roomId, role, displayName, deviceId) {
 async function getSession(token) {
   if (!token || token.length < 16) return null;
   const [rows] = await getPool().query(
-    `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name
+    `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.viewer_invite, r.host_invite
      FROM sessions s
      JOIN rooms r ON r.id = s.room_id
      WHERE s.id = ? AND s.expires_at > UTC_TIMESTAMP(3)
@@ -374,14 +391,19 @@ async function insertChat(roomId, authorName, role, body, deviceId) {
 }
 
 function sessionPayload(row) {
-  return {
+  const payload = {
     room: row.slug,
     role: row.role,
     displayName: row.display_name,
     active: Boolean(row.active),
     maxViewers: row.max_viewers,
-    links: viewerLinks(row.slug),
+    links: viewerLinks(row.slug, row.role === 'host' ? row.viewer_invite : ''),
   };
+  if (row.role === 'host') {
+    payload.viewerInvite = row.viewer_invite || '';
+    payload.hostInvite = row.host_invite || '';
+  }
+  return payload;
 }
 
 // ----------------------------------------------------------------- WebSocket
@@ -764,42 +786,58 @@ const handler = async (req, res) => {
     return sendJson(res, 200, { ok: true, ...mePayload(device, null) });
   }
 
-  // POST /api/rooms — create
+  // POST /api/rooms — create (slug e chaves gerados no servidor)
   if (req.method === 'POST' && pathname === '/api/rooms') {
     try {
       const device = await ensureDevice(req, res);
       const body = await readJson(req);
-      const slug = String(body.slug || body.room || '');
       const displayName = device.display_name || '';
-      const hostKey = body.hostKey || '';
-      const viewerKey = body.viewerKey || '';
       let maxViewers = Number(body.maxViewers ?? 8);
       if (!Number.isInteger(maxViewers) || maxViewers < 1 || maxViewers > 8) maxViewers = 8;
 
-      if (!ROOM_RE.test(slug)) return send(res, 400, 'Nome de sala inválido.');
       if (!displayName) return send(res, 400, 'Informe seu nome.');
-      if (!validateKey(hostKey, KEY_MIN_CREATE)) {
-        return send(res, 400, 'Chave do host inválida (mín. 8).');
-      }
-      if (!validateKey(viewerKey, KEY_MIN_CREATE)) {
-        return send(res, 400, 'Chave dos espectadores inválida (mín. 8).');
-      }
 
       const owned = await findRoomByDevice(device.id);
       if (owned) return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
 
-      const existing = await findRoomBySlug(slug);
-      if (existing) {
-        noteFailure(ip);
-        return send(res, 409, 'Sala já existe. Entre como host ou escolha outro nome.');
+      const hostKey = randomKey();
+      const viewerKey = randomKey();
+      let slug = '';
+      let roomId = 0;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        slug = randomSlug();
+        if (!ROOM_RE.test(slug)) continue;
+        try {
+          const [ins] = await getPool().query(
+            `INSERT INTO rooms
+              (slug, host_key_hash, viewer_key_hash, host_invite, viewer_invite, creator_name, max_viewers, active, device_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            [
+              slug,
+              shaHex(hostKey),
+              shaHex(viewerKey),
+              hostKey,
+              viewerKey,
+              displayName,
+              maxViewers,
+              device.id,
+            ],
+          );
+          roomId = ins.insertId;
+          break;
+        } catch (e) {
+          if (e && e.code === 'ER_DUP_ENTRY') {
+            const dup = String(e.message || '');
+            if (dup.includes('uq_rooms_device') || dup.includes('device_id')) {
+              return send(res, 409, 'Este aparelho já tem uma sala. Exclua-a para criar outra.');
+            }
+            continue;
+          }
+          throw e;
+        }
       }
+      if (!roomId) return send(res, 500, 'Não foi possível criar a sala.');
 
-      const [ins] = await getPool().query(
-        `INSERT INTO rooms (slug, host_key_hash, viewer_key_hash, creator_name, max_viewers, active, device_id)
-         VALUES (?, ?, ?, ?, ?, 1, ?)`,
-        [slug, shaHex(hostKey), shaHex(viewerKey), displayName, maxViewers, device.id],
-      );
-      const roomId = ins.insertId;
       const sess = await createSession(roomId, 'host', displayName, device.id);
       setSessionCookie(res, sess.id, req);
       const row = await findRoomBySlug(slug);
@@ -957,18 +995,16 @@ const handler = async (req, res) => {
         updates.push('max_viewers = ?');
         params.push(mv);
       }
-      if (body.hostKey !== undefined && body.hostKey !== '') {
-        if (!validateKey(body.hostKey, KEY_MIN_CREATE)) return send(res, 400, 'Nova chave do host inválida.');
-        updates.push('host_key_hash = ?');
-        params.push(shaHex(body.hostKey));
+      if (body.regenerateHostKey === true) {
+        const hostKey = randomKey();
+        updates.push('host_key_hash = ?', 'host_invite = ?');
+        params.push(shaHex(hostKey), hostKey);
         hostKeyChanged = true;
       }
-      if (body.viewerKey !== undefined && body.viewerKey !== '') {
-        if (!validateKey(body.viewerKey, KEY_MIN_CREATE)) {
-          return send(res, 400, 'Nova chave dos espectadores inválida.');
-        }
-        updates.push('viewer_key_hash = ?');
-        params.push(shaHex(body.viewerKey));
+      if (body.regenerateViewerKey === true) {
+        const viewerKey = randomKey();
+        updates.push('viewer_key_hash = ?', 'viewer_invite = ?');
+        params.push(shaHex(viewerKey), viewerKey);
         viewerKeyChanged = true;
       }
 
@@ -998,9 +1034,9 @@ const handler = async (req, res) => {
 
       let message = 'Sala atualizada.';
       if (viewerKeyChanged) {
-        message = 'Chave dos espectadores atualizada — quem já estava assistindo precisa entrar de novo.';
+        message = 'Link dos espectadores regenerado — quem já estava assistindo precisa entrar de novo.';
       } else if (hostKeyChanged) {
-        message = 'Chave do host atualizada.';
+        message = 'Chave do host regenerada.';
       }
 
       return sendJson(res, 200, {
@@ -1008,7 +1044,9 @@ const handler = async (req, res) => {
         message,
         active: Boolean(updated.active),
         maxViewers: updated.max_viewers,
-        links: viewerLinks(slug),
+        links: viewerLinks(slug, updated.viewer_invite),
+        viewerInvite: updated.viewer_invite || '',
+        hostInvite: updated.host_invite || '',
       });
     } catch (e) {
       console.error(e);

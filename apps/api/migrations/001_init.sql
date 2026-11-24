@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   slug VARCHAR(40) NOT NULL,
   host_key_hash CHAR(64) NOT NULL,
   viewer_key_hash CHAR(64) NOT NULL,
+  host_invite VARCHAR(128) NOT NULL,
+  viewer_invite VARCHAR(128) NOT NULL,
   creator_name VARCHAR(80) NOT NULL,
   max_viewers TINYINT UNSIGNED NOT NULL DEFAULT 8,
   active TINYINT(1) NOT NULL DEFAULT 1,

@@ -17,6 +17,7 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
+import { inviteKeyFromHash } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
@@ -102,6 +103,11 @@ export function SalaPage() {
     }
   }, [active])
 
+  function clearInviteHash() {
+    if (!location.hash) return
+    history.replaceState(null, '', `${location.pathname}${location.search}`)
+  }
+
   async function boot() {
     setBooting(true)
     const meta = await api<{ exists: boolean; active?: boolean }>(`/api/rooms/${encodeURIComponent(room)}`)
@@ -118,7 +124,28 @@ export function SalaPage() {
     if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
       setDisplayName(res.data.displayName)
       setActive(true)
+      clearInviteHash()
+      setBooting(false)
+      return
     }
+
+    const inviteKey = inviteKeyFromHash()
+    if (inviteKey && meta.data.active !== false) {
+      const joined = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
+        method: 'POST',
+        body: JSON.stringify({ viewerKey: inviteKey }),
+      })
+      clearInviteHash()
+      if (joined.ok) {
+        setDisplayName(joined.data.displayName)
+        setActive(true)
+        setBooting(false)
+        return
+      }
+      toast.error(joined.message, { id: joined.message })
+      setKey(inviteKey)
+    }
+
     setBooting(false)
   }
 
