@@ -50,6 +50,7 @@ export function SalaPage() {
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
   const [controlMode, setControlMode] = useState<ControlMode>('view')
+  const [transmitMode, setTransmitMode] = useState<'web' | 'companion'>('web')
   const [selfPeerId, setSelfPeerId] = useState('')
 
   useImmersive(active)
@@ -311,6 +312,7 @@ export function SalaPage() {
       setRoomActive(msg.active)
       setSelfPeerId(msg.peerId)
       setControlMode(msg.controlMode || 'view')
+      setTransmitMode(msg.transmitMode || 'web')
       syncSlots(msg.slots || [])
       return
     }
@@ -517,7 +519,9 @@ export function SalaPage() {
             <span className="text-xs text-muted-foreground">
               {controlMode === 'interact'
                 ? 'Você pode interagir — clique na tela'
-                : 'Somente visualização'}
+                : transmitMode === 'companion'
+                  ? 'Somente visualização (Assist)'
+                  : 'Somente visualização (Watch)'}
             </span>
           </div>
           <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>

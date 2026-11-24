@@ -48,12 +48,21 @@ Quando o companion assume a mídia, o browser host autenticado passa a `role=pan
 | 3 | Audit, limites UAC, versionamento |
 | A–D | Companion console completo, persistência, deep link, web como painel leve |
 
+## Modos
+
+| Modo | `transmitMode` | Interagir |
+| --- | --- | --- |
+| **Watch** | `web` | Não (só ver) |
+| **Assist** | `companion` | Sim, após promover |
+
 ## API / WS
 
 - `controlMode: 'view' | 'interact'`
-- Host ou **panel** → `set_control`
-- Só o host de mídia → `slot_add` / ofertas WebRTC
+- Seats (compat `role`): `transmitter` (host), `controller` (panel), `viewer`
+- Host ou **panel** → `set_control` (interact só se Assist)
+- Só o transmitter → `slot_add` / ofertas WebRTC
 - Input: **DataChannel** `watchdesk-input`
+- Live room: [`apps/api/src/live-room.js`](../apps/api/src/live-room.js)
 
 ## Companion
 

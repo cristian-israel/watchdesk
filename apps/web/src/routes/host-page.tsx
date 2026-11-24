@@ -486,11 +486,15 @@ export function HostPage() {
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           <header className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
+              <h1 className="text-xl font-semibold">
+                {transmitMode === 'companion' || companionPanel ? 'Painel' : 'Watch'} — {room}
+              </h1>
               <p className="text-sm text-muted-foreground">
                 {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} · máx.{' '}
                 {maxViewers} espectadores
-                {transmitMode === 'companion' ? ' · companion' : ''}
+                {transmitMode === 'companion' || companionPanel
+                  ? ' · Assist (companion)'
+                  : ' · Watch (só ver)'}
               </p>
             </div>
             <Button type="button" variant="outline" size="sm" onClick={() => void logout()}>
@@ -562,6 +566,12 @@ export function HostPage() {
             <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Espectadores ({viewers.length}/{maxViewers})
             </h2>
+            {transmitMode === 'web' && !companionPanel ? (
+              <p className="text-sm text-muted-foreground">
+                Modo Watch (só ver): promover a interagir exige o Companion transmitindo. Baixe na
+                página Início.
+              </p>
+            ) : null}
             {!viewers.length ? (
               <p className="text-sm text-muted-foreground">Ninguém assistindo.</p>
             ) : (
@@ -569,6 +579,7 @@ export function HostPage() {
                 <ul className="flex flex-col gap-2">
                   {viewers.map((v) => {
                     const interacting = v.controlMode === 'interact' || v.peerId === pilotPeerId
+                    const canAssist = transmitMode === 'companion' || companionPanel
                     return (
                       <li
                         key={v.peerId}
@@ -581,26 +592,28 @@ export function HostPage() {
                             · {interacting ? 'interagir' : 'só ver'}
                           </span>
                         </span>
-                        <div className="flex flex-wrap gap-1">
-                          {interacting ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setViewerControl(v.peerId, 'view')}
-                            >
-                              Só ver
-                            </Button>
-                          ) : (
-                            <Button
-                              type="button"
-                              size="sm"
-                              onClick={() => setViewerControl(v.peerId, 'interact')}
-                            >
-                              Permitir interagir
-                            </Button>
-                          )}
-                        </div>
+                        {canAssist ? (
+                          <div className="flex flex-wrap gap-1">
+                            {interacting ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setViewerControl(v.peerId, 'view')}
+                              >
+                                Só ver
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => setViewerControl(v.peerId, 'interact')}
+                              >
+                                Permitir interagir
+                              </Button>
+                            )}
+                          </div>
+                        ) : null}
                       </li>
                     )
                   })}

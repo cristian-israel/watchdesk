@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { initDb, getPool, healthCheck } = require('./db');
 const { companionLatest, cmpSemver } = require('./companion-version');
+const liveRoom = require('./live-room');
 const {
   ROOM_RE,
   KEY_MIN_CREATE,
@@ -79,7 +80,7 @@ const cfg = {
   turnRealm: args['turn-realm'] || process.env.TURN_REALM || 'watchdesk',
 };
 
-const MAX_SLOTS = 8;
+const { MAX_SLOTS } = liveRoom;
 const ICE_TTL_SEC = 3600;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEVICE_TTL_SEC = 365 * 24 * 60 * 60;
@@ -90,65 +91,11 @@ const CHAT_MAX = 500;
 /** @type {Map<string, RuntimeRoom>} */
 const live = new Map();
 
-/**
- * @typedef {{
- *   slug: string,
- *   roomDbId: number,
- *   maxViewers: number,
- *   active: boolean,
- *   host: Client | null,
- *   panels: Map<string, Client>,
- *   slots: Set<number>,
- *   viewers: Map<string, Client>,
- *   pilotPeerId: string | null,
- *   transmitMode: 'web' | 'companion',
- * }} RuntimeRoom
- *
- * @typedef {{
- *   ws: import('ws').WebSocket,
- *   peerId: string,
- *   role: 'host' | 'viewer' | 'panel',
- *   roomSlug: string,
- *   displayName: string,
- *   sessionId: string,
- *   deviceId: string,
- *   controlMode: 'view' | 'interact',
- *   clientKind: 'web' | 'companion',
- *   companionVersion: string,
- * }} Client
- */
-
 function ensureLive(row) {
-  let r = live.get(row.slug);
-  if (!r) {
-    r = {
-      slug: row.slug,
-      roomDbId: row.id,
-      maxViewers: row.max_viewers,
-      active: Boolean(row.active),
-      host: null,
-      panels: new Map(),
-      slots: new Set(),
-      viewers: new Map(),
-      pilotPeerId: null,
-      transmitMode: 'web',
-    };
-    live.set(row.slug, r);
-  } else {
-    r.roomDbId = row.id;
-    r.maxViewers = row.max_viewers;
-    r.active = Boolean(row.active);
-    if (!('pilotPeerId' in r)) r.pilotPeerId = null;
-    if (!('transmitMode' in r)) r.transmitMode = 'web';
-    if (!r.panels) r.panels = new Map();
-  }
-  return r;
+  return liveRoom.ensureLive(live, row);
 }
 
-/** Host de mídia ou painel web (pode promover / revogar). */
-function canControlRoom(client) {
-  return client && (client.role === 'host' || client.role === 'panel');
-}
+const canControlRoom = liveRoom.canControlRoom;
 
 async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
   if (!deviceId || !slug) return;
@@ -201,9 +148,7 @@ async function insertControlAudit(roomId, hostDeviceId, peerId, displayName, mod
   }
 }
 
-function controlModeOf(client) {
-  return client.controlMode === 'interact' ? 'interact' : 'view';
-}
+const controlModeOf = liveRoom.controlModeOf;
 
 const { blocked, noteFailure } = createRateLimiter();
 
@@ -346,6 +291,7 @@ async function renameDevice(deviceId, displayName) {
       }
     };
     touch(room.host);
+    for (const p of room.panels?.values() || []) touch(p);
     for (const viewer of room.viewers.values()) touch(viewer);
     if (changed) broadcastRoom(room, { type: 'roster', members: roster(room) });
   }
@@ -363,6 +309,7 @@ function dropLiveRoom(slug, message) {
     }
   };
   if (rt.host) closeOne(rt.host);
+  for (const p of rt.panels?.values() || []) closeOne(p);
   for (const viewer of rt.viewers.values()) closeOne(viewer);
   live.delete(slug);
 }
@@ -467,135 +414,23 @@ function sessionPayload(row) {
 
 // ----------------------------------------------------------------- WebSocket
 
-function wsSend(ws, msg) {
-  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
-}
-
-function slotList(room) {
-  return [...room.slots].sort((a, b) => a - b);
-}
-
-function roster(room) {
-  const list = [];
-  if (room.host) {
-    list.push({
-      peerId: room.host.peerId,
-      role: 'host',
-      displayName: room.host.displayName,
-      clientKind: room.host.clientKind || 'web',
-    });
-  }
-  for (const p of room.panels?.values() || []) {
-    list.push({
-      peerId: p.peerId,
-      role: 'panel',
-      displayName: p.displayName,
-      clientKind: p.clientKind || 'web',
-    });
-  }
-  for (const v of room.viewers.values()) {
-    list.push({
-      peerId: v.peerId,
-      role: 'viewer',
-      displayName: v.displayName,
-      controlMode: controlModeOf(v),
-    });
-  }
-  return list;
-}
+const wsSend = liveRoom.wsSend;
+const slotList = liveRoom.slotList;
+const roster = liveRoom.roster;
+const broadcastRoom = liveRoom.broadcastRoom;
+const findClient = liveRoom.findClient;
+const clearMediaSlots = liveRoom.clearMediaSlots;
 
 function applyControlMode(room, peerId, mode, hostClient) {
-  const target = room.viewers.get(peerId);
-  if (!target) return { ok: false, message: 'Espectador não encontrado.' };
-  const next = mode === 'interact' ? 'interact' : 'view';
-  if (next === 'interact') {
-    for (const v of room.viewers.values()) {
-      if (v.peerId !== peerId && v.controlMode === 'interact') {
-        v.controlMode = 'view';
-        broadcastRoom(room, {
-          type: 'control_changed',
-          peerId: v.peerId,
-          mode: 'view',
-          displayName: v.displayName,
-        });
-      }
-    }
-    room.pilotPeerId = peerId;
-  } else if (room.pilotPeerId === peerId) {
-    room.pilotPeerId = null;
-  }
-  target.controlMode = next;
-  broadcastRoom(room, {
-    type: 'control_changed',
-    peerId,
-    mode: next,
-    displayName: target.displayName,
+  return liveRoom.applyControlMode(room, peerId, mode, hostClient, {
+    onAudit: (roomId, deviceId, peer, name, m) => {
+      void insertControlAudit(roomId, deviceId, peer, name, m);
+    },
   });
-  broadcastRoom(room, { type: 'roster', members: roster(room) });
-  void insertControlAudit(
-    room.roomDbId,
-    hostClient?.deviceId || '',
-    peerId,
-    target.displayName,
-    next,
-  );
-  return { ok: true };
-}
-
-function broadcastRoom(room, msg, exceptPeerId = null) {
-  if (room.host && room.host.peerId !== exceptPeerId) wsSend(room.host.ws, msg);
-  for (const p of room.panels?.values() || []) {
-    if (p.peerId !== exceptPeerId) wsSend(p.ws, msg);
-  }
-  for (const v of room.viewers.values()) {
-    if (v.peerId !== exceptPeerId) wsSend(v.ws, msg);
-  }
-}
-
-function findClient(room, peerId) {
-  if (room.host && room.host.peerId === peerId) return room.host;
-  if (room.panels?.has(peerId)) return room.panels.get(peerId);
-  return room.viewers.get(peerId) || null;
-}
-
-function clearMediaSlots(room) {
-  room.slots.clear();
-  for (const v of room.viewers.values()) {
-    wsSend(v.ws, { type: 'slots', slots: [] });
-  }
 }
 
 function detachClient(client) {
-  const room = live.get(client.roomSlug);
-  if (!room) return;
-
-  if (client.role === 'host' && room.host && room.host.peerId === client.peerId) {
-    room.host = null;
-    room.slots.clear();
-    room.transmitMode = 'web';
-    for (const v of room.viewers.values()) {
-      wsSend(v.ws, { type: 'host_left' });
-    }
-    broadcastRoom(room, { type: 'roster', members: roster(room) });
-    return;
-  }
-
-  if (client.role === 'panel' && room.panels?.has(client.peerId)) {
-    room.panels.delete(client.peerId);
-    broadcastRoom(room, { type: 'roster', members: roster(room) });
-    return;
-  }
-
-  if (client.role === 'viewer' && room.viewers.has(client.peerId)) {
-    room.viewers.delete(client.peerId);
-    if (room.pilotPeerId === client.peerId) room.pilotPeerId = null;
-    broadcastRoom(room, {
-      type: 'viewer_left',
-      peerId: client.peerId,
-      displayName: client.displayName,
-    });
-    broadcastRoom(room, { type: 'roster', members: roster(room) });
-  }
+  liveRoom.detachClient(live, client);
 }
 
 async function handleHello(ws, req, ip) {
@@ -634,41 +469,12 @@ async function handleHello(ws, req, ip) {
   const helloKind = ws.watchdeskHelloKind === 'companion' ? 'companion' : 'web';
   const companionVersion = String(ws.watchdeskCompanionVersion || '');
 
-  // Browser como painel enquanto companion transmite — sem kick.
-  const joinAsPanel =
-    session.role === 'host' &&
-    helloKind === 'web' &&
-    room.host &&
-    room.host.clientKind === 'companion';
+  const { joinAsPanel } = liveRoom.resolveHostJoin(room, {
+    sessionRole: session.role,
+    helloKind,
+    incomingWs: ws,
+  });
 
-  if (session.role === 'host' && !joinAsPanel && room.host && room.host.ws !== ws) {
-    const prev = room.host;
-    if (helloKind === 'companion' && prev.clientKind !== 'companion') {
-      // Companion assume a mídia; browser vira painel (mantém WS).
-      prev.role = 'panel';
-      room.panels.set(prev.peerId, prev);
-      room.host = null;
-      clearMediaSlots(room);
-      wsSend(prev.ws, {
-        type: 'host_role',
-        role: 'panel',
-        transmitMode: 'companion',
-        message: 'Companion transmitindo. Este navegador continua como painel (promover / config).',
-      });
-    } else {
-      try {
-        wsSend(prev.ws, { type: 'error', message: 'Outro host entrou nesta sala.' });
-        prev.ws.close();
-      } catch {
-        /* ok */
-      }
-      if (prev.role === 'panel') room.panels.delete(prev.peerId);
-      room.host = null;
-      clearMediaSlots(room);
-    }
-  }
-
-  /** @type {Client} */
   const client = {
     ws,
     peerId,
@@ -708,11 +514,13 @@ async function handleHello(ws, req, ip) {
   const history = await loadChat(room.roomDbId);
   const latest = companionLatest();
   const asController = canControlRoom(client);
+  const seat = liveRoom.seatOf(client);
 
   wsSend(ws, {
     type: 'welcome',
     peerId,
     role: joinAsPanel ? 'host' : session.role,
+    seat,
     panel: joinAsPanel || client.role === 'panel',
     room: session.slug,
     displayName: session.display_name,
@@ -830,29 +638,7 @@ function handleSignal(client, msg) {
 }
 
 function kickRole(room, role, reason) {
-  if (role === 'viewer') {
-    const list = [...room.viewers.values()];
-    room.viewers.clear();
-    for (const v of list) {
-      broadcastRoom(room, {
-        type: 'viewer_left',
-        peerId: v.peerId,
-        displayName: v.displayName,
-      });
-      wsSend(v.ws, { type: 'auth_changed', message: reason });
-      try {
-        v.ws.watchdeskClient = null;
-        v.ws.close();
-      } catch {
-        /* ok */
-      }
-    }
-    if (room.host) {
-      wsSend(room.host.ws, { type: 'roster', members: roster(room) });
-    }
-  } else if (role === 'host' && room.host) {
-    // keep current host; used when invalidating other host sessions only
-  }
+  liveRoom.kickRole(room, role, reason);
 }
 
 function attachWs(server) {

@@ -9,9 +9,13 @@ export type ChatMessage = {
 
 export type ControlMode = 'view' | 'interact'
 
+/** seat = transmitter | controller | viewer (compat: role host | panel | viewer). */
+export type RoomSeat = 'transmitter' | 'controller' | 'viewer'
+
 export type RosterMember = {
   peerId: string
   role: 'host' | 'viewer' | 'panel'
+  seat?: RoomSeat
   displayName: string
   controlMode?: ControlMode
   clientKind?: 'web' | 'companion'
@@ -22,6 +26,7 @@ export type SignalInbound =
       type: 'welcome'
       peerId: string
       role: 'host' | 'viewer'
+      seat?: RoomSeat
       panel?: boolean
       room: string
       displayName: string
@@ -50,6 +55,7 @@ export type SignalInbound =
   | {
       type: 'host_role'
       role: 'panel' | 'host'
+      seat?: RoomSeat
       transmitMode?: 'web' | 'companion'
       message?: string
     }
