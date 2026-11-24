@@ -1,4 +1,7 @@
-:80 {
+# Web + API.
+# frontier: DOMAIN=http://<FRONTIER_ALIAS> (Host = alias Docker na rede frontier).
+# local: DOMAIN=:80 (publicado como HTTP_PORT no host).
+{$DOMAIN} {
 	encode gzip
 
 	handle /api/* {

@@ -12,7 +12,43 @@ x-api-limites: &api_limites
     - /tmp:size=${API_TMP_SIZE:-64m},mode=1777
   logging: *rotacao_logs
 
+x-caddy-base: &caddy_base
+  init: true
+  image: caddy:2-alpine
+  restart: unless-stopped
+  mem_limit: ${CADDY_MEMORY_LIMIT:-256m}
+  cpus: ${CADDY_CPUS:-0.5}
+  pids_limit: 128
+  environment:
+    DOMAIN: ${DOMAIN:-http://watchdesk}
+  volumes:
+    - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    - ./caddy/upstream.caddy:/etc/caddy/upstream.caddy:ro
+    - ./site:/opt:ro
+    - caddy_data:/data
+    - caddy_config:/config
+  logging: *rotacao_logs
+
 services:
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql, local]
+    environment:
+      MYSQL_DATABASE: watchdesk
+      MYSQL_USER: watchdesk
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-watchdesk}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging: *rotacao_logs
+    restart: unless-stopped
+
   turn:
     image: coturn/coturn:4.6
     restart: unless-stopped
@@ -43,13 +79,17 @@ services:
     environment: &api_env
       NODE_ENV: production
       PORT: ${PORT:-7030}
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-mysql://watchdesk:${MYSQL_PASSWORD:-}@mysql:3306/watchdesk}
       PUBLIC_HOST: ${PUBLIC_HOST:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_REALM: ${TURN_REALM:-watchdesk}
+    depends_on: &api_depends
+      mysql:
+        condition: service_healthy
+        required: false
     healthcheck: &api_health
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7030/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -67,34 +107,54 @@ services:
     profiles: [green]
     env_file: .env
     environment: *api_env
+    depends_on: *api_depends
     healthcheck: *api_health
     restart: unless-stopped
     networks:
       - default
       - infra
 
+  # --- Caddy na frontier (prod-hub: tunnel e/ou alias; sem portas no host) ---
   caddy:
-    init: true
-    image: caddy:2
-    restart: unless-stopped
-    mem_limit: ${CADDY_MEMORY_LIMIT:-256m}
-    cpus: ${CADDY_CPUS:-0.5}
-    pids_limit: 128
+    <<: *caddy_base
+    profiles: [frontier]
+    networks:
+      default:
+        aliases:
+          - caddy
+      frontier:
+        aliases:
+          - ${FRONTIER_ALIAS:-watchdesk}
+
+  # --- Caddy local (portas no host; lab / máquina única) ---
+  caddy_local:
+    <<: *caddy_base
+    profiles: [local]
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/upstream.caddy:/etc/caddy/upstream.caddy:ro
       - ./site:/opt:ro
+      - caddy_local_data:/data
+      - caddy_local_config:/config
     networks:
       default:
-      edge:
         aliases:
-          - ${EDGE_ALIAS}
-    logging: *rotacao_logs
+          - caddy
+
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:
+  caddy_local_data:
+  caddy_local_config:
 
 networks:
-  edge:
+  frontier:
     external: true
-    name: edge
+    name: ${FRONTIER_NETWORK:-frontier}
   infra:
     external: true
-    name: infra
+    name: ${INFRA_NETWORK:-infra}

@@ -6,6 +6,34 @@ if ! mkdir "$lock" 2>/dev/null; then echo "Outro deploy de API está em andament
 trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 trap 'exit 1' HUP INT TERM
 
+ler_env() {
+  grep -E "^[[:space:]]*$1=" .env 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d ' "\r' || true
+}
+
+perfis=$(ler_env COMPOSE_PROFILES)
+case ",$perfis," in
+  *,frontier,*|*,local,*) ;;
+  *)
+    echo "ERRO: COMPOSE_PROFILES deve conter ao menos 'frontier' ou 'local' no arquivo .env (atual: '${perfis:-<vazio>}')." >&2
+    exit 1
+    ;;
+esac
+
+case ",$perfis," in
+  *,mysql,*|*,local,*)
+    if [ -z "$(ler_env MYSQL_PASSWORD)" ] && [ -z "$(ler_env DATABASE_URL)" ]; then
+      echo "ERRO: Profile de MySQL local ativo ('$perfis'), mas MYSQL_PASSWORD não foi definido no .env." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    if [ -z "$(ler_env DATABASE_URL)" ]; then
+      echo "ERRO: MySQL local não está em COMPOSE_PROFILES ('$perfis'), portanto DATABASE_URL (apontando para a rede infra do prod-hub) é obrigatório no .env." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 esperar() {
   slot=$1
   i=0
@@ -30,11 +58,24 @@ recolher() {
   docker compose --profile "$1" rm -f "api_$1" 2>/dev/null || true
 }
 
+recarregar_caddy() {
+  recarregou=0
+  if [ -n "$(docker compose ps -q caddy 2>/dev/null)" ]; then
+    docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+    recarregou=1
+  fi
+  if [ -n "$(docker compose ps -q caddy_local 2>/dev/null)" ]; then
+    docker compose exec -T caddy_local caddy reload --config /etc/caddy/Caddyfile
+    recarregou=1
+  fi
+  [ "$recarregou" -eq 1 ]
+}
+
 apontar() {
   slot=$1
   anterior=$(cat caddy/upstream.caddy 2>/dev/null || echo "")
   printf 'reverse_proxy api_%s:7030\n' "$slot" > caddy/upstream.caddy
-  if ! docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile; then
+  if ! recarregar_caddy; then
     printf '%s\n' "$anterior" > caddy/upstream.caddy
     return 1
   fi
@@ -62,9 +103,6 @@ imagem="$repositorio:$tag"
 export API_IMAGE="$imagem"
 
 ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):7030$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
-if [ -z "$ativo" ]; then
-  ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):9000$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
-fi
 
 if [ "$ativo" = "blue" ]; then
   proximo="green"
@@ -74,7 +112,7 @@ else
   proximo="blue"
 fi
 
-echo "==> Subindo api_$proximo ($tag)..."
+echo "==> Subindo novo container no slot api_$proximo..."
 subir "$proximo"
 
 echo "==> Aguardando api_$proximo ficar saudável..."
@@ -86,13 +124,14 @@ fi
 
 echo "==> Apontando Caddy para api_$proximo..."
 if ! apontar "$proximo"; then
-  echo "Falha ao recarregar o Caddy." >&2
+  echo "Falha ao recarregar o Caddy. Revertendo..." >&2
+  recolher "$proximo"
   exit 1
 fi
 
 if [ -n "$ativo" ] && [ "$ativo" != "$proximo" ]; then
-  echo "==> Recolhendo api_$ativo..."
+  echo "==> Desligando slot anterior api_$ativo..."
   recolher "$ativo"
 fi
 
-echo "Deploy da API ($proximo - $tag) concluído."
+echo "Deploy da API ($proximo - $tag) concluído com sucesso e zero downtime!"

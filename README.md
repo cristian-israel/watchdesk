@@ -25,4 +25,4 @@ pnpm db:down                  # para o MySQL local
 
 ## Produção
 
-Ver [docs/producao.md](docs/producao.md). `deploy/.env` usa `DATABASE_URL` do MySQL da VPS (sem MySQL neste Compose de prod).
+Ver [docs/producao.md](docs/producao.md). Em produção o MySQL é o da rede `infra` do prod-hub, ou o profile `mysql` do Compose de deploy.
