@@ -105,3 +105,21 @@ test('originAllowed: localhost, mesmo host, sem origin', () => {
     false,
   );
 });
+
+test('originAllowed: PUBLIC_ORIGIN quando Host é FRONTIER_ALIAS', () => {
+  const req = {
+    headers: {
+      origin: 'https://watchdesk-giganet.ilumea.com.br',
+      host: 'watchdesk',
+    },
+  };
+  assert.equal(originAllowed(req, '10.254.1.32'), false);
+  assert.equal(
+    originAllowed(req, '10.254.1.32', 'https://watchdesk-giganet.ilumea.com.br'),
+    true,
+  );
+  assert.equal(
+    originAllowed(req, '10.254.1.32', 'https://outro.ilumea.com.br'),
+    false,
+  );
+});

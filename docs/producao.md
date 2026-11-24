@@ -1,6 +1,21 @@
 # Produção
 
-Um VPS, um domínio por instalação. HTTP entra pelo Cloudflare Tunnel (`prod-hub`); no host ficam as portas do **Coturn**. Estado das salas fica no **MySQL**: o da rede `infra` do prod-hub, ou o deste Compose quando o profile `mysql` está ativo.
+Um servidor, um domínio por instalação. HTTP entra pelo porteiro do `prod-hub` (**alias** na LAN e/ou **túnel** Cloudflare); no host ficam as portas do **Coturn** (IP LAN ou público, conforme o cenário). Estado das salas fica no **MySQL**: o da rede `infra` do prod-hub, ou o deste Compose quando o profile `mysql` está ativo.
+
+## LAN (caminho feliz interno)
+
+Empresa: PCs alcançam o servidor; sem exposição na internet.
+
+| | |
+| --- | --- |
+| Hub | `COMPOSE_PROFILES=alias,...` (sem `tunnel` para este app) |
+| Site | `alias/sites/*.caddy` + TLS DNS Cloudflare (Let's Encrypt) |
+| DNS | registro A (nuvem cinza) → IP privado do servidor |
+| App | `COMPOSE_PROFILES=frontier`, `DOMAIN=http://<FRONTIER_ALIAS>` |
+| `PUBLIC_ORIGIN` | URL HTTPS do DNS (ex. `https://watchdesk-giganet.ilumea.com.br`) — links e Origin do WS |
+| `PUBLIC_HOST` | IP **LAN** do servidor (Coturn / ICE) |
+
+O alias reescreve `Host` para o `FRONTIER_ALIAS`; a API aceita o hostname de `PUBLIC_ORIGIN` no WebSocket. Firewall: 80/443 e TURN só na interface LAN.
 
 ## Modelo comum
 
@@ -60,15 +75,15 @@ FLUSH PRIVILEGES;
 
 ## TURN / firewall
 
-- `PUBLIC_HOST` = IP da VPS
+- `PUBLIC_HOST` = IP alcançável pelos peers (LAN ou público)
 - `TURN_SECRET` = string longa aleatória
-- Firewall: **3478** UDP+TCP e **50100–50200** UDP; **80/443** fechadas no host; sem **7031**
+- Firewall: **3478** UDP+TCP e **50100–50200** UDP; no caminho feliz LAN, **80/443** só via `caddy_alias` na rede interna; sem **7031**
 
 ## Ambiente
 
 Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `FRONTIER_ALIAS`, `DOMAIN=http://<FRONTIER_ALIAS>`, `PUBLIC_HOST`, `PUBLIC_ORIGIN`, `TURN_SECRET`. `DATABASE_URL` é obrigatório quando o profile `mysql` não está ativo.
 
-`PUBLIC_HOST` = IP da VPS (TURN). `PUBLIC_ORIGIN` = URL HTTPS do DNS (ex. `https://watchdesk.ilumea.com.br`) — links de convite; o IP não serve atrás do túnel.
+`PUBLIC_HOST` = IP do Coturn (LAN ou público). `PUBLIC_ORIGIN` = URL HTTPS do DNS do site (ex. `https://watchdesk-giganet.ilumea.com.br`) — links de convite e Origin permitido no WS; o IP não serve como URL do site.
 
 ## Subida
 

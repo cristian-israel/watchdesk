@@ -35,8 +35,8 @@ const HELP = `
 Uso: node src/index.js [opções]
 
   --port <n>           Porta HTTP/WS (padrão: 7030 ou PORT)
-  --public-host <h>    IP público TURN (ou PUBLIC_HOST)
-  --public-origin <u>  Origem HTTPS do site, ex. https://watchdesk.exemplo (ou PUBLIC_ORIGIN)
+  --public-host <h>    IP TURN alcançável pelos peers (ou PUBLIC_HOST)
+  --public-origin <u>  Origem HTTPS do site, ex. https://watchdesk-giganet.ilumea.com.br (ou PUBLIC_ORIGIN)
   --turn-secret <s>    Segredo Coturn (ou TURN_SECRET)
   --turn-host <h>      Host TURN (padrão: PUBLIC_HOST)
   --turn-port <n>      Porta TURN (padrão: 3478)
@@ -664,7 +664,7 @@ function attachWs(server) {
       socket.destroy();
       return;
     }
-    if (!originAllowed(req, cfg.publicHost)) {
+    if (!originAllowed(req, cfg.publicHost, cfg.publicOrigin)) {
       socket.destroy();
       return;
     }

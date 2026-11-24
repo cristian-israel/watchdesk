@@ -109,7 +109,21 @@ function iceServers({ turnSecret, turnHost, publicHost, turnPort }, userId = 'an
   return servers;
 }
 
-function originAllowed(req, publicHost = '') {
+function publicOriginHostname(publicOrigin = '') {
+  const raw = String(publicOrigin || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Alias/túnel reescreve Host para FRONTIER_ALIAS; Origin fica no DNS do site.
+ * Aceita Host, PUBLIC_HOST (IP TURN) e hostname de PUBLIC_ORIGIN.
+ */
+function originAllowed(req, publicHost = '', publicOrigin = '') {
   const origin = String(req.headers.origin || '');
   if (!origin) return true;
   let hostname;
@@ -122,6 +136,8 @@ function originAllowed(req, publicHost = '') {
   const host = String(req.headers.host || '').split(':')[0];
   if (hostname === host) return true;
   if (publicHost && hostname === publicHost) return true;
+  const siteHost = publicOriginHostname(publicOrigin);
+  if (siteHost && hostname === siteHost) return true;
   return false;
 }
 
@@ -168,6 +184,7 @@ module.exports = {
   cookieHeader,
   createRateLimiter,
   iceServers,
+  publicOriginHostname,
   originAllowed,
   readJson,
 };
