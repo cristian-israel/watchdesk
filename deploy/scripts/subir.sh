@@ -17,7 +17,7 @@ case ",$perfis," in
     ;;
 esac
 
-ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):[0-9][0-9]*$/\1/p' caddy/upstream.caddy 2>/dev/null || true)
+ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):[0-9][0-9]*.*/\1/p' caddy/upstream.caddy 2>/dev/null | head -n1 || true)
 [ -n "$ativo" ] || ativo=blue
 
 set --

@@ -1,1 +1,5 @@
-reverse_proxy api_blue:7030
+# Preserva X-Forwarded-* do alias/túnel (senão o 2º hop sobrescreve Host=FRONTIER_ALIAS).
+reverse_proxy api_blue:7030 {
+	header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+	header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+}

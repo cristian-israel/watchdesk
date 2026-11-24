@@ -71,10 +71,20 @@ recarregar_caddy() {
   [ "$recarregou" -eq 1 ]
 }
 
+escrever_upstream() {
+  slot=$1
+  cat > caddy/upstream.caddy <<EOF
+reverse_proxy api_${slot}:7030 {
+	header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+	header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+}
+EOF
+}
+
 apontar() {
   slot=$1
   anterior=$(cat caddy/upstream.caddy 2>/dev/null || echo "")
-  printf 'reverse_proxy api_%s:7030\n' "$slot" > caddy/upstream.caddy
+  escrever_upstream "$slot"
   if ! recarregar_caddy; then
     printf '%s\n' "$anterior" > caddy/upstream.caddy
     return 1
@@ -102,7 +112,7 @@ repositorio=${API_IMAGE_REPOSITORY:-ghcr.io/cristian-israel/watchdesk-api}
 imagem="$repositorio:$tag"
 export API_IMAGE="$imagem"
 
-ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):7030$/\1/p' caddy/upstream.caddy 2>/dev/null || echo "")
+ativo=$(sed -n 's/^reverse_proxy api_\(blue\|green\):7030.*/\1/p' caddy/upstream.caddy 2>/dev/null | head -n1 || echo "")
 
 if [ "$ativo" = "blue" ]; then
   proximo="green"

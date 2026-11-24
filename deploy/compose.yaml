@@ -81,7 +81,6 @@ services:
       PORT: ${PORT:-7030}
       DATABASE_URL: ${DATABASE_URL:-mysql://watchdesk:${MYSQL_PASSWORD:-}@mysql:3306/watchdesk}
       PUBLIC_HOST: ${PUBLIC_HOST:-}
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}

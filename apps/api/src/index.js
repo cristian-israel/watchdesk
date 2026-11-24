@@ -9,7 +9,6 @@ require('./load-env');
 
 const http = require('http');
 const crypto = require('crypto');
-const os = require('os');
 const { WebSocketServer } = require('ws');
 const { initDb, getPool, healthCheck } = require('./db');
 const {
@@ -36,7 +35,6 @@ Uso: node src/index.js [opções]
 
   --port <n>           Porta HTTP/WS (padrão: 7030 ou PORT)
   --public-host <h>    IP TURN alcançável pelos peers (ou PUBLIC_HOST)
-  --public-origin <u>  Origem HTTPS do site, ex. https://watchdesk-giganet.ilumea.com.br (ou PUBLIC_ORIGIN)
   --turn-secret <s>    Segredo Coturn (ou TURN_SECRET)
   --turn-host <h>      Host TURN (padrão: PUBLIC_HOST)
   --turn-port <n>      Porta TURN (padrão: 3478)
@@ -72,7 +70,6 @@ const args = parseArgs(process.argv.slice(2));
 const cfg = {
   port: Number(args.port || process.env.PORT || 7030),
   publicHost: args['public-host'] || process.env.PUBLIC_HOST || '',
-  publicOrigin: String(args['public-origin'] || process.env.PUBLIC_ORIGIN || '').replace(/\/$/, ''),
   turnSecret: args['turn-secret'] || process.env.TURN_SECRET || '',
   turnHost: args['turn-host'] || process.env.TURN_HOST || '',
   turnPort: Number(args['turn-port'] || process.env.TURN_PORT || 3478),
@@ -168,16 +165,6 @@ function setDeviceCookie(res, id, req) {
   appendSetCookie(res, cookieHeader('wd_device', id, DEVICE_TTL_SEC, req));
 }
 
-function lanAddresses() {
-  const out = [];
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const n of list || []) {
-      if (n.family === 'IPv4' && !n.internal) out.push(n.address);
-    }
-  }
-  return out;
-}
-
 function randomSlug() {
   return crypto.randomBytes(9).toString('base64url').slice(0, 12);
 }
@@ -192,12 +179,9 @@ function salaPath(slug, viewerInvite) {
   return `${base}#k=${encodeURIComponent(viewerInvite)}`;
 }
 
+/** Path relativo — o front monta a URL com location.origin (padrão frontier/alias). */
 function viewerLinks(slug, viewerInvite = '') {
-  // PUBLIC_HOST é IP do TURN — inútil como link HTTP atrás do túnel.
-  // PUBLIC_ORIGIN = DNS público do site (ex. https://watchdesk.ilumea.com.br).
-  const path = salaPath(slug, viewerInvite);
-  if (cfg.publicOrigin) return [`${cfg.publicOrigin}${path}`];
-  return lanAddresses().map((h) => `http://${h}${path}`);
+  return [salaPath(slug, viewerInvite)];
 }
 
 function iceServers(userId = 'anon') {
@@ -664,7 +648,7 @@ function attachWs(server) {
       socket.destroy();
       return;
     }
-    if (!originAllowed(req, cfg.publicHost, cfg.publicOrigin)) {
+    if (!originAllowed(req, cfg.publicHost)) {
       socket.destroy();
       return;
     }
@@ -1090,7 +1074,6 @@ async function main() {
     console.log(`Porta:  ${cfg.port}`);
     console.log(`WS:     /api/ws`);
     console.log('DB:     ok');
-    console.log(`Site:   ${cfg.publicOrigin || '(PUBLIC_ORIGIN vazio — links usam LAN/local)'}`);
     if (cfg.turnSecret && (cfg.turnHost || cfg.publicHost)) {
       console.log(`TURN:   ${cfg.turnHost || cfg.publicHost}:${cfg.turnPort}`);
     } else {

@@ -109,21 +109,18 @@ function iceServers({ turnSecret, turnHost, publicHost, turnPort }, userId = 'an
   return servers;
 }
 
-function publicOriginHostname(publicOrigin = '') {
-  const raw = String(publicOrigin || '').trim();
-  if (!raw) return '';
-  try {
-    return new URL(raw).hostname;
-  } catch {
-    return '';
-  }
+function forwardedHost(req) {
+  const raw = String(req.headers['x-forwarded-host'] || '')
+    .split(',')[0]
+    .trim();
+  return raw.split(':')[0];
 }
 
 /**
- * Alias/túnel reescreve Host para FRONTIER_ALIAS; Origin fica no DNS do site.
- * Aceita Host, PUBLIC_HOST (IP TURN) e hostname de PUBLIC_ORIGIN.
+ * Alias/túnel reescreve Host para FRONTIER_ALIAS; o DNS do site vem em X-Forwarded-Host.
+ * Aceita Host, X-Forwarded-Host e PUBLIC_HOST (IP TURN, raro).
  */
-function originAllowed(req, publicHost = '', publicOrigin = '') {
+function originAllowed(req, publicHost = '') {
   const origin = String(req.headers.origin || '');
   if (!origin) return true;
   let hostname;
@@ -135,9 +132,9 @@ function originAllowed(req, publicHost = '', publicOrigin = '') {
   if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
   const host = String(req.headers.host || '').split(':')[0];
   if (hostname === host) return true;
+  const xfHost = forwardedHost(req);
+  if (xfHost && hostname === xfHost) return true;
   if (publicHost && hostname === publicHost) return true;
-  const siteHost = publicOriginHostname(publicOrigin);
-  if (siteHost && hostname === siteHost) return true;
   return false;
 }
 
@@ -184,7 +181,7 @@ module.exports = {
   cookieHeader,
   createRateLimiter,
   iceServers,
-  publicOriginHostname,
+  forwardedHost,
   originAllowed,
   readJson,
 };

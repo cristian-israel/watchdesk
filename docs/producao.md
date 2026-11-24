@@ -11,11 +11,11 @@ Empresa: PCs alcançam o servidor; sem exposição na internet.
 | Hub | `COMPOSE_PROFILES=alias,...` (sem `tunnel` para este app) |
 | Site | `alias/sites/*.caddy` + TLS DNS Cloudflare (Let's Encrypt) |
 | DNS | registro A (nuvem cinza) → IP privado do servidor |
-| App | `COMPOSE_PROFILES=frontier`, `DOMAIN=http://<FRONTIER_ALIAS>` |
-| `PUBLIC_ORIGIN` | URL HTTPS do DNS (ex. `https://watchdesk-giganet.ilumea.com.br`) — links e Origin do WS |
-| `PUBLIC_HOST` | IP **LAN** do servidor (Coturn / ICE) |
+| App | `COMPOSE_PROFILES=frontier`, `DOMAIN=http://<FRONTIER_ALIAS>` (igual Giga/Keeptime) |
+| URL do site | só no prod-hub (`alias/sites` ou túnel) — convites no front com `location.origin` |
+| `PUBLIC_HOST` | IP **LAN** do servidor (Coturn / ICE; peculiaridade WebRTC) |
 
-O alias reescreve `Host` para o `FRONTIER_ALIAS`; a API aceita o hostname de `PUBLIC_ORIGIN` no WebSocket. Firewall: 80/443 e TURN só na interface LAN.
+O alias reescreve `Host` para o `FRONTIER_ALIAS` e manda `X-Forwarded-Host` com o DNS; a API usa isso no WebSocket. Firewall: 80/443 e TURN só na interface LAN.
 
 ## Modelo comum
 
@@ -81,9 +81,9 @@ FLUSH PRIVILEGES;
 
 ## Ambiente
 
-Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `FRONTIER_ALIAS`, `DOMAIN=http://<FRONTIER_ALIAS>`, `PUBLIC_HOST`, `PUBLIC_ORIGIN`, `TURN_SECRET`. `DATABASE_URL` é obrigatório quando o profile `mysql` não está ativo.
+Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `FRONTIER_ALIAS`, `DOMAIN=http://<FRONTIER_ALIAS>`, `PUBLIC_HOST`, `TURN_SECRET`. `DATABASE_URL` é obrigatório quando o profile `mysql` não está ativo.
 
-`PUBLIC_HOST` = IP do Coturn (LAN ou público). `PUBLIC_ORIGIN` = URL HTTPS do DNS do site (ex. `https://watchdesk-giganet.ilumea.com.br`) — links de convite e Origin permitido no WS; o IP não serve como URL do site.
+`PUBLIC_HOST` = IP do Coturn (LAN ou público). A URL HTTPS do site fica só no porteiro do prod-hub.
 
 ## Subida
 
