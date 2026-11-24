@@ -103,7 +103,6 @@ export function HostPage() {
     setNewMax(data.maxViewers)
     if (data.viewerInvite) setViewerInvite(data.viewerInvite)
     if (data.hostInvite) setHostInvite(data.hostInvite)
-    panelRef.current = true
     setPanel(true)
   }
 
