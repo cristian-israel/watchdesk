@@ -84,8 +84,17 @@ async function migrate() {
 function splitStatements(sql) {
   return sql
     .split(/;\s*\n/)
-    .map((s) => s.trim())
-    .filter((s) => s && !s.startsWith('--'));
+    .map((s) =>
+      s
+        .split('\n')
+        .filter((line) => {
+          const t = line.trim();
+          return t && !t.startsWith('--');
+        })
+        .join('\n')
+        .trim(),
+    )
+    .filter(Boolean);
 }
 
 async function healthCheck() {
