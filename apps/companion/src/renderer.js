@@ -11,6 +11,8 @@ let cookie = '';
 let ws = null;
 /** @type {Map<string, RTCPeerConnection>} */
 const peers = new Map();
+/** @type {Map<string, { displayName: string, controlMode: string }>} */
+const viewers = new Map();
 let localStream = null;
 let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
 let selfPeerId = '';
@@ -19,6 +21,48 @@ let slot = 0;
 
 function peerKey(id) {
   return `${id}:${slot}`;
+}
+
+function renderViewers() {
+  const ul = $('viewers');
+  if (!ul) return;
+  if (!viewers.size) {
+    ul.innerHTML = '<li style="opacity:.7;font-size:12px">Nenhum espectador.</li>';
+    return;
+  }
+  ul.innerHTML = [...viewers.entries()]
+    .map(([id, v]) => {
+      const interacting = v.controlMode === 'interact' || id === pilotPeerId;
+      return `<li style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0;padding:6px 8px;border:1px solid #333;border-radius:8px">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(v.displayName || id)}${interacting ? ' · piloto' : ''}</span>
+        <button type="button" data-peer="${id}" data-mode="${interacting ? 'view' : 'interact'}" class="secondary" style="flex-shrink:0;width:auto;padding:4px 8px;font-size:12px">
+          ${interacting ? 'Revogar' : 'Promover'}
+        </button>
+      </li>`;
+    })
+    .join('');
+  ul.querySelectorAll('button[data-peer]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const peerId = btn.getAttribute('data-peer');
+      const mode = btn.getAttribute('data-mode');
+      if (peerId && mode) wsSend({ type: 'set_control', peerId, mode });
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function setPilot(peerId, displayName) {
+  pilotPeerId = peerId;
+  $('pilot').textContent = peerId ? displayName || peerId : 'ninguém';
+  $('revoke').disabled = !peerId;
+  renderViewers();
 }
 
 async function ensurePeer(peerId, stream) {
@@ -73,9 +117,17 @@ function connectWs(origin) {
     if (msg.type === 'welcome') {
       selfPeerId = msg.peerId;
       iceServers = msg.iceServers?.length ? msg.iceServers : iceServers;
-      pilotPeerId = msg.pilotPeerId || null;
-      $('pilot').textContent = pilotPeerId || 'ninguém';
-      $('revoke').disabled = !pilotPeerId;
+      viewers.clear();
+      for (const v of msg.viewers || []) {
+        viewers.set(v.peerId, {
+          displayName: v.displayName || v.peerId,
+          controlMode: v.controlMode || 'view',
+        });
+      }
+      const pilot = msg.pilotPeerId
+        ? viewers.get(msg.pilotPeerId)?.displayName || msg.pilotPeerId
+        : null;
+      setPilot(msg.pilotPeerId || null, pilot);
       log(`WS ok · peer ${selfPeerId} · transmit=${msg.transmitMode}`);
       wsSend({ type: 'slot_add', slot });
       for (const v of msg.viewers || []) {
@@ -84,20 +136,46 @@ function connectWs(origin) {
       return;
     }
     if (msg.type === 'viewer_joined' && localStream) {
+      viewers.set(msg.peerId, {
+        displayName: msg.displayName || msg.peerId,
+        controlMode: msg.controlMode || 'view',
+      });
+      renderViewers();
       await ensurePeer(msg.peerId, localStream);
       return;
     }
     if (msg.type === 'viewer_left') {
+      viewers.delete(msg.peerId);
+      if (pilotPeerId === msg.peerId) setPilot(null, null);
+      else renderViewers();
       const key = peerKey(msg.peerId);
       peers.get(key)?.close();
       peers.delete(key);
       return;
     }
+    if (msg.type === 'roster') {
+      const next = new Map();
+      for (const m of msg.members || []) {
+        if (m.role !== 'viewer') continue;
+        next.set(m.peerId, {
+          displayName: m.displayName || m.peerId,
+          controlMode: m.controlMode || 'view',
+        });
+      }
+      viewers.clear();
+      for (const [id, v] of next) viewers.set(id, v);
+      renderViewers();
+      return;
+    }
     if (msg.type === 'control_changed') {
-      if (msg.mode === 'interact') pilotPeerId = msg.peerId;
-      else if (msg.peerId === pilotPeerId) pilotPeerId = null;
-      $('pilot').textContent = pilotPeerId ? msg.displayName : 'ninguém';
-      $('revoke').disabled = !pilotPeerId;
+      const row = viewers.get(msg.peerId);
+      if (row) row.controlMode = msg.mode;
+      for (const [id, v] of viewers) {
+        if (id !== msg.peerId && msg.mode === 'interact') v.controlMode = 'view';
+      }
+      if (msg.mode === 'interact') setPilot(msg.peerId, msg.displayName);
+      else if (msg.peerId === pilotPeerId) setPilot(null, null);
+      else renderViewers();
       log(`controle: ${msg.displayName} → ${msg.mode}`);
       return;
     }
@@ -191,6 +269,8 @@ async function boot() {
   $('stop').onclick = () => {
     ws?.close();
     closePeers();
+    viewers.clear();
+    renderViewers();
     localStream?.getTracks().forEach((t) => t.stop());
     localStream = null;
     $('connect').disabled = false;
@@ -203,6 +283,8 @@ async function boot() {
     if (!pilotPeerId) return;
     wsSend({ type: 'set_control', peerId: pilotPeerId, mode: 'view' });
   };
+
+  renderViewers();
 }
 
 void boot();

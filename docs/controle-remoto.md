@@ -11,7 +11,7 @@ Assistência remota na LAN: espectador entra **só vendo**; o host promove a **i
 - **Arquitetura híbrida:** web (salas, viewer, painel do host) + companion `.exe` no PC remoto.
 - **Um caminho de transmissão por sessão:** web `getDisplayMedia` **ou** companion — nunca os dois publicando vídeo juntos.
   - Sem companion: só visualizar (como hoje).
-  - Com companion na sala: o exe captura e injeta; o browser no mesmo PC é painel (lista, promover, chat).
+  - Com companion na sala: o app captura e injeta; o browser do host vira **painel** (promover, chat, config) sem ser kickado. O companion também lista espectadores e promove/revoga.
 - Companion: **Windows e Linux (X11 / xdotool)**. Viewer permanece no browser.
 - Update do companion: banner + botão Atualizar (usuário confirma; sem force silencioso no MVP).
 

@@ -24,6 +24,7 @@ const { parseInput } = require('./protocol');
 // NixOS / sandboxes restritivos
 if (process.env.WATCHDESK_ELECTRON_NO_SANDBOX === '1' || platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-dev-shm-usage');
 }
 
 /** @type {BrowserWindow | null} */

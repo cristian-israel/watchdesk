@@ -89,7 +89,9 @@
     <button id="stop" class="secondary" type="button" disabled>Parar</button>
     <p>Piloto (interagir): <span id="pilot">ninguém</span></p>
     <button id="revoke" class="secondary" type="button" disabled>Revogar controle</button>
-    <p id="hint" style="margin-top:8px">Linux: precisa do <code>xdotool</code> no PATH para injetar mouse/teclado.</p>
+    <label style="margin-top:10px">Espectadores</label>
+    <ul id="viewers" style="list-style:none;padding:0;margin:0 0 8px"></ul>
+    <p id="hint" style="margin-top:8px">Linux: precisa do <code>xdotool</code> no PATH para injetar mouse/teclado. O navegador do host pode ficar aberto como painel.</p>
     <div id="log"></div>
     <script src="./renderer.js"></script>
   </body>

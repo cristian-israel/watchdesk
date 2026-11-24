@@ -60,16 +60,17 @@ export function HostPage() {
   const [newMax, setNewMax] = useState(8)
   const [pilotPeerId, setPilotPeerId] = useState<string | null>(null)
   const [transmitMode, setTransmitMode] = useState<'web' | 'companion'>('web')
+  const [companionPanel, setCompanionPanel] = useState(false)
   const [companionMeta, setCompanionMeta] = useState<{
     version: string
     downloadUrl?: string
     downloadUrlLinux?: string
   } | null>(null)
 
-  const panelRef = useRef(false)
+  const companionPanelRef = useRef(false)
   const sharesRef = useRef(shares)
   sharesRef.current = shares
-  panelRef.current = panel
+  companionPanelRef.current = companionPanel
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
@@ -196,10 +197,28 @@ export function HostPage() {
       setNewMax(msg.maxViewers)
       setPilotPeerId(msg.pilotPeerId ?? null)
       setTransmitMode(msg.transmitMode || 'web')
+      setCompanionPanel(Boolean(msg.panel) || msg.transmitMode === 'companion')
       if (msg.companion) setCompanionMeta(msg.companion)
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
-      for (const [slot, share] of sharesRef.current) {
-        await offerAllViewers(slot, share.stream)
+      // Painel não publica mídia — companion (ou este browser em modo web) transmite.
+      if (!msg.panel && msg.transmitMode !== 'companion') {
+        for (const [slot, share] of sharesRef.current) {
+          await offerAllViewers(slot, share.stream)
+        }
+      }
+      return
+    }
+    if (msg.type === 'host_role') {
+      setCompanionPanel(msg.role === 'panel')
+      if (msg.transmitMode) setTransmitMode(msg.transmitMode)
+      if (msg.role === 'panel') {
+        for (const key of [...peersRef.current.keys()]) closePeer(key)
+        for (const [, share] of sharesRef.current) {
+          share.stream.getTracks().forEach((t) => t.stop())
+        }
+        sharesRef.current = new Map()
+        setShares(new Map())
+        toast.message(msg.message || 'Companion transmitindo — este navegador é o painel.')
       }
       return
     }
@@ -212,8 +231,10 @@ export function HostPage() {
       setChatFeed((prev) =>
         appendSystem(prev, joinedLine(msg.displayName, 'viewer'), `join-${msg.peerId}`),
       )
-      for (const [slot, share] of sharesRef.current) {
-        await ensurePeer(msg.peerId, slot, share.stream)
+      if (!companionPanelRef.current && transmitMode !== 'companion') {
+        for (const [slot, share] of sharesRef.current) {
+          await ensurePeer(msg.peerId, slot, share.stream)
+        }
       }
       return
     }
@@ -477,10 +498,10 @@ export function HostPage() {
             </Button>
           </header>
 
-          {transmitMode === 'companion' ? (
+          {transmitMode === 'companion' || companionPanel ? (
             <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
               Companion ativo: a captura sai do app. Use este painel para promover espectadores a
-              interagir. Não compartilhe tela pelo browser ao mesmo tempo.
+              interagir e ajustar a sala. Não compartilhe tela pelo browser ao mesmo tempo.
             </p>
           ) : (
             <>

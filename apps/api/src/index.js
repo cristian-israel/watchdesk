@@ -97,6 +97,7 @@ const live = new Map();
  *   maxViewers: number,
  *   active: boolean,
  *   host: Client | null,
+ *   panels: Map<string, Client>,
  *   slots: Set<number>,
  *   viewers: Map<string, Client>,
  *   pilotPeerId: string | null,
@@ -106,7 +107,7 @@ const live = new Map();
  * @typedef {{
  *   ws: import('ws').WebSocket,
  *   peerId: string,
- *   role: 'host' | 'viewer',
+ *   role: 'host' | 'viewer' | 'panel',
  *   roomSlug: string,
  *   displayName: string,
  *   sessionId: string,
@@ -126,6 +127,7 @@ function ensureLive(row) {
       maxViewers: row.max_viewers,
       active: Boolean(row.active),
       host: null,
+      panels: new Map(),
       slots: new Set(),
       viewers: new Map(),
       pilotPeerId: null,
@@ -138,8 +140,14 @@ function ensureLive(row) {
     r.active = Boolean(row.active);
     if (!('pilotPeerId' in r)) r.pilotPeerId = null;
     if (!('transmitMode' in r)) r.transmitMode = 'web';
+    if (!r.panels) r.panels = new Map();
   }
   return r;
+}
+
+/** Host de mídia ou painel web (pode promover / revogar). */
+function canControlRoom(client) {
+  return client && (client.role === 'host' || client.role === 'panel');
 }
 
 async function touchRecentRoom(deviceId, slug, label, viewerInvite) {
@@ -477,6 +485,14 @@ function roster(room) {
       clientKind: room.host.clientKind || 'web',
     });
   }
+  for (const p of room.panels?.values() || []) {
+    list.push({
+      peerId: p.peerId,
+      role: 'panel',
+      displayName: p.displayName,
+      clientKind: p.clientKind || 'web',
+    });
+  }
   for (const v of room.viewers.values()) {
     list.push({
       peerId: v.peerId,
@@ -528,6 +544,9 @@ function applyControlMode(room, peerId, mode, hostClient) {
 
 function broadcastRoom(room, msg, exceptPeerId = null) {
   if (room.host && room.host.peerId !== exceptPeerId) wsSend(room.host.ws, msg);
+  for (const p of room.panels?.values() || []) {
+    if (p.peerId !== exceptPeerId) wsSend(p.ws, msg);
+  }
   for (const v of room.viewers.values()) {
     if (v.peerId !== exceptPeerId) wsSend(v.ws, msg);
   }
@@ -535,7 +554,15 @@ function broadcastRoom(room, msg, exceptPeerId = null) {
 
 function findClient(room, peerId) {
   if (room.host && room.host.peerId === peerId) return room.host;
+  if (room.panels?.has(peerId)) return room.panels.get(peerId);
   return room.viewers.get(peerId) || null;
+}
+
+function clearMediaSlots(room) {
+  room.slots.clear();
+  for (const v of room.viewers.values()) {
+    wsSend(v.ws, { type: 'slots', slots: [] });
+  }
 }
 
 function detachClient(client) {
@@ -545,9 +572,16 @@ function detachClient(client) {
   if (client.role === 'host' && room.host && room.host.peerId === client.peerId) {
     room.host = null;
     room.slots.clear();
+    room.transmitMode = 'web';
     for (const v of room.viewers.values()) {
       wsSend(v.ws, { type: 'host_left' });
     }
+    broadcastRoom(room, { type: 'roster', members: roster(room) });
+    return;
+  }
+
+  if (client.role === 'panel' && room.panels?.has(client.peerId)) {
+    room.panels.delete(client.peerId);
     broadcastRoom(room, { type: 'roster', members: roster(room) });
     return;
   }
@@ -596,27 +630,49 @@ async function handleHello(ws, req, ip) {
     return;
   }
 
-  if (session.role === 'host') {
-    if (room.host && room.host.ws !== ws) {
-      try {
-        wsSend(room.host.ws, { type: 'error', message: 'Outro host entrou nesta sala.' });
-        room.host.ws.close();
-      } catch {
-        /* ok */
-      }
-      room.host = null;
-      room.slots.clear();
-    }
-  }
-
   const peerId = crypto.randomBytes(8).toString('hex');
   const helloKind = ws.watchdeskHelloKind === 'companion' ? 'companion' : 'web';
   const companionVersion = String(ws.watchdeskCompanionVersion || '');
+
+  // Browser como painel enquanto companion transmite — sem kick.
+  const joinAsPanel =
+    session.role === 'host' &&
+    helloKind === 'web' &&
+    room.host &&
+    room.host.clientKind === 'companion';
+
+  if (session.role === 'host' && !joinAsPanel && room.host && room.host.ws !== ws) {
+    const prev = room.host;
+    if (helloKind === 'companion' && prev.clientKind !== 'companion') {
+      // Companion assume a mídia; browser vira painel (mantém WS).
+      prev.role = 'panel';
+      room.panels.set(prev.peerId, prev);
+      room.host = null;
+      clearMediaSlots(room);
+      wsSend(prev.ws, {
+        type: 'host_role',
+        role: 'panel',
+        transmitMode: 'companion',
+        message: 'Companion transmitindo. Este navegador continua como painel (promover / config).',
+      });
+    } else {
+      try {
+        wsSend(prev.ws, { type: 'error', message: 'Outro host entrou nesta sala.' });
+        prev.ws.close();
+      } catch {
+        /* ok */
+      }
+      if (prev.role === 'panel') room.panels.delete(prev.peerId);
+      room.host = null;
+      clearMediaSlots(room);
+    }
+  }
+
   /** @type {Client} */
   const client = {
     ws,
     peerId,
-    role: session.role,
+    role: joinAsPanel ? 'panel' : session.role,
     roomSlug: session.slug,
     displayName: session.display_name,
     sessionId: session.id,
@@ -627,7 +683,9 @@ async function handleHello(ws, req, ip) {
   };
   ws.watchdeskClient = client;
 
-  if (session.role === 'host') {
+  if (joinAsPanel) {
+    room.panels.set(peerId, client);
+  } else if (session.role === 'host') {
     if (helloKind === 'companion') {
       const latest = companionLatest();
       if (companionVersion && cmpSemver(companionVersion, latest.minVersion) < 0 && latest.mandatory) {
@@ -639,8 +697,6 @@ async function handleHello(ws, req, ip) {
         return;
       }
       room.transmitMode = 'companion';
-    } else if (room.transmitMode === 'companion' && room.host?.clientKind === 'companion') {
-      // web host panel ok alongside companion later; keep transmitMode
     } else {
       room.transmitMode = 'web';
     }
@@ -651,40 +707,41 @@ async function handleHello(ws, req, ip) {
 
   const history = await loadChat(room.roomDbId);
   const latest = companionLatest();
+  const asController = canControlRoom(client);
 
   wsSend(ws, {
     type: 'welcome',
     peerId,
-    role: session.role,
+    role: joinAsPanel ? 'host' : session.role,
+    panel: joinAsPanel || client.role === 'panel',
     room: session.slug,
     displayName: session.display_name,
     slots: slotList(room),
-    viewers:
-      session.role === 'host'
-        ? [...room.viewers.values()].map((v) => ({
-            peerId: v.peerId,
-            displayName: v.displayName,
-            controlMode: controlModeOf(v),
-          }))
-        : undefined,
+    viewers: asController
+      ? [...room.viewers.values()].map((v) => ({
+          peerId: v.peerId,
+          displayName: v.displayName,
+          controlMode: controlModeOf(v),
+        }))
+      : undefined,
     iceServers: iceServers(peerId),
     maxViewers: room.maxViewers,
     active: room.active,
     controlMode: session.role === 'viewer' ? 'view' : undefined,
     pilotPeerId: room.pilotPeerId,
     transmitMode: room.transmitMode,
-    companion: session.role === 'host' ? latest : undefined,
+    companion: asController ? latest : undefined,
   });
   wsSend(ws, { type: 'chat_history', messages: history });
   broadcastRoom(room, { type: 'roster', members: roster(room) });
 
-  if (session.role === 'host') {
+  if (client.role === 'host') {
     broadcastRoom(
       room,
       { type: 'host_joined', peerId, displayName: session.display_name },
       peerId,
     );
-  } else {
+  } else if (client.role === 'viewer') {
     broadcastRoom(
       room,
       { type: 'viewer_joined', peerId, displayName: session.display_name, controlMode: 'view' },
@@ -700,7 +757,7 @@ function handleSignal(client, msg) {
   const room = live.get(client.roomSlug);
   if (!room) return;
 
-  if (client.role === 'host' && msg.type === 'set_control') {
+  if (canControlRoom(client) && msg.type === 'set_control') {
     const peerId = String(msg.peerId || '');
     const mode = msg.mode === 'interact' ? 'interact' : 'view';
     const result = applyControlMode(room, peerId, mode, client);
@@ -708,6 +765,7 @@ function handleSignal(client, msg) {
     return;
   }
 
+  // Só o host de mídia (companion/web transmitter) mexe em slots.
   if (client.role === 'host' && (msg.type === 'slot_add' || msg.type === 'slot_remove')) {
     const slot = Number(msg.slot);
     if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) return;
@@ -723,10 +781,11 @@ function handleSignal(client, msg) {
       const body = String(msg.body || '').trim().slice(0, CHAT_MAX);
       if (!body) return;
       try {
+        const chatRole = client.role === 'panel' ? 'host' : client.role;
         const saved = await insertChat(
           room.roomDbId,
           client.displayName,
-          client.role,
+          chatRole,
           body,
           client.deviceId,
         );

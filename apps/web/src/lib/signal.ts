@@ -11,7 +11,7 @@ export type ControlMode = 'view' | 'interact'
 
 export type RosterMember = {
   peerId: string
-  role: 'host' | 'viewer'
+  role: 'host' | 'viewer' | 'panel'
   displayName: string
   controlMode?: ControlMode
   clientKind?: 'web' | 'companion'
@@ -22,6 +22,7 @@ export type SignalInbound =
       type: 'welcome'
       peerId: string
       role: 'host' | 'viewer'
+      panel?: boolean
       room: string
       displayName: string
       slots: number[]
@@ -46,6 +47,12 @@ export type SignalInbound =
   | { type: 'viewer_left'; peerId: string; displayName?: string }
   | { type: 'host_joined'; peerId: string; displayName: string }
   | { type: 'host_left' }
+  | {
+      type: 'host_role'
+      role: 'panel' | 'host'
+      transmitMode?: 'web' | 'companion'
+      message?: string
+    }
   | { type: 'slots'; slots: number[] }
   | { type: 'offer'; from: string; slot: number; sdp: string }
   | { type: 'answer'; from: string; slot: number; sdp: string }

@@ -25,9 +25,26 @@ function toPixels(x, y) {
   };
 }
 
+let xdotoolWarned = false;
+
+function xdotoolBin() {
+  return process.env.WATCHDESK_XDOTOOL || 'xdotool';
+}
+
 function run(bin, args) {
-  execFile(bin, args, { timeout: 2000, windowsHide: true }, () => {
-    /* fire-and-forget */
+  execFile(bin, args, { timeout: 2000, windowsHide: true }, (err) => {
+    if (!err) return;
+    if (bin.includes('xdotool') || bin === 'xdotool') {
+      if (!xdotoolWarned) {
+        xdotoolWarned = true;
+        console.warn(
+          '[input] xdotool falhou — instale e deixe no PATH (ou WATCHDESK_XDOTOOL).',
+          err.message,
+        );
+      }
+      return;
+    }
+    console.warn('[input]', bin, err.message);
   });
 }
 
@@ -108,28 +125,29 @@ function applyWin(ev) {
 }
 
 function applyLinux(ev) {
+  const xd = xdotoolBin();
   if (ev.type === 'move' || ev.type === 'down' || ev.type === 'up') {
     const { x, y } = toPixels(ev.x, ev.y);
     if (ev.type === 'move') {
-      run('xdotool', ['mousemove', '--sync', String(x), String(y)]);
+      run(xd, ['mousemove', '--sync', String(x), String(y)]);
       return;
     }
-    run('xdotool', ['mousemove', '--sync', String(x), String(y)]);
+    run(xd, ['mousemove', '--sync', String(x), String(y)]);
     const btn = ev.button === 2 ? '3' : ev.button === 1 ? '2' : '1';
-    run('xdotool', [ev.type === 'down' ? 'mousedown' : 'mouseup', btn]);
+    run(xd, [ev.type === 'down' ? 'mousedown' : 'mouseup', btn]);
     return;
   }
   if (ev.type === 'wheel') {
     const { x, y } = toPixels(ev.x, ev.y);
-    run('xdotool', ['mousemove', '--sync', String(x), String(y)]);
+    run(xd, ['mousemove', '--sync', String(x), String(y)]);
     const btn = (ev.dy || 0) > 0 ? '5' : '4';
-    run('xdotool', ['click', btn]);
+    run(xd, ['click', btn]);
     return;
   }
   if (ev.type === 'keydown' || ev.type === 'keyup') {
     const name = xdotoolKey(ev.code, ev.key);
     if (!name) return;
-    run('xdotool', [ev.type === 'keydown' ? 'keydown' : 'keyup', name]);
+    run(xd, [ev.type === 'keydown' ? 'keydown' : 'keyup', name]);
   }
 }
 
