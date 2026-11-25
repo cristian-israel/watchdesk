@@ -20,6 +20,7 @@ export type SessionRow = RowDataPacket & {
   max_viewers: number
   creator_name: string
   join_mode: string
+  voice_enabled: number | boolean
   room_device_id: string
 }
 
@@ -51,7 +52,8 @@ export class SessionsService {
   async get(token: string | undefined): Promise<SessionRow | null> {
     if (!token || token.length < 16) return null
     const [rows] = await this.db.query<SessionRow[]>(
-      `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.join_mode, r.device_id AS room_device_id
+      `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.join_mode, r.voice_enabled,
+              r.device_id AS room_device_id
        FROM sessions s
        JOIN rooms r ON r.id = s.room_id
        WHERE s.id = ? AND s.expires_at > UTC_TIMESTAMP(3)
@@ -84,6 +86,7 @@ export class SessionsService {
     active: number | boolean
     max_viewers: number
     join_mode?: string
+    voice_enabled?: number | boolean
   }) {
     return {
       room: row.slug,
@@ -92,6 +95,7 @@ export class SessionsService {
       active: Boolean(row.active),
       maxViewers: row.max_viewers,
       joinMode: normalizeJoinMode(row.join_mode),
+      voiceEnabled: Boolean(row.voice_enabled),
       links: viewerLinks(row.slug),
     }
   }

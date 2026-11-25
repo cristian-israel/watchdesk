@@ -17,7 +17,10 @@ import { SessionsService } from '../sessions/sessions.service'
 import { LiveService } from './live.service'
 import {
   MAX_SLOTS,
+  applyHostMute,
+  applySelfMute,
   broadcastRoom,
+  canRelaySignal,
   denyPending,
   detachClient,
   findClient,
@@ -26,6 +29,7 @@ import {
   resolveHostJoin,
   roster,
   slotList,
+  voiceState,
   wsSend,
   type LiveClient,
   type LiveWs,
@@ -158,6 +162,8 @@ export class SignalService {
       displayName: session.display_name,
       sessionId: session.id,
       deviceId,
+      muted: true,
+      forceMuted: false,
     }
     ws.watchdeskClient = client
 
@@ -191,6 +197,8 @@ export class SignalService {
       maxViewers: room.maxViewers,
       active: room.active,
       joinMode,
+      voiceEnabled: room.voiceEnabled,
+      voiceState: asPending ? [] : voiceState(room),
       admitStatus: asPending ? 'pending' : session.role === 'viewer' ? 'admitted' : undefined,
     })
 
@@ -205,6 +213,9 @@ export class SignalService {
         { type: 'host_joined', peerId, displayName: session.display_name },
         peerId,
       )
+      if (room.voiceEnabled) {
+        broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+      }
     } else if (client.role === 'pending') {
       if (room.host) {
         wsSend(room.host.ws, {
@@ -221,6 +232,9 @@ export class SignalService {
         { type: 'viewer_joined', peerId, displayName: session.display_name },
         peerId,
       )
+      if (room.voiceEnabled) {
+        broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+      }
       if (client.deviceId) {
         void this.rooms.touchRecent(
           client.deviceId,
@@ -248,8 +262,19 @@ export class SignalService {
           void this.rooms.touchRecent(result.client.deviceId, room.slug, room.slug)
         }
         void this.sessions.loadChat(room.roomDbId).then((messages) => {
-          if (result.client) wsSend(result.client.ws, { type: 'chat_history', messages })
+          if (result.client) {
+            wsSend(result.client.ws, { type: 'chat_history', messages })
+            if (room.voiceEnabled) {
+              wsSend(result.client.ws, {
+                type: 'voice_state',
+                peers: voiceState(room),
+              })
+            }
+          }
         })
+        if (room.voiceEnabled) {
+          broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+        }
       } else if (result.client?.sessionId) {
         void this.sessions.delete(result.client.sessionId)
       }
@@ -291,15 +316,55 @@ export class SignalService {
       return
     }
 
+    if (msg.type === 'self_mute') {
+      if (client.role !== 'host' && client.role !== 'viewer') return
+      const muted = Boolean(msg.muted)
+      const result = applySelfMute(client, muted)
+      if (!result.ok) return
+      broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+      return
+    }
+
+    if (msg.type === 'voice_mute') {
+      if (client.role !== 'host') return
+      const peerId = String(msg.peerId || '')
+      const muted = Boolean(msg.muted)
+      const result = applyHostMute(room, peerId, muted)
+      if (!result.ok) {
+        wsSend(client.ws, { type: 'error', message: result.message })
+        return
+      }
+      broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+      return
+    }
+
+    if (['voice_offer', 'voice_answer', 'voice_ice'].includes(msg.type)) {
+      const to = String(msg.to || '')
+      const target = findClient(room, to)
+      if (!target || !canRelaySignal(room, client, target, 'voice')) return
+
+      if (msg.type === 'voice_ice') {
+        wsSend(target.ws, {
+          type: 'voice_ice',
+          from: client.peerId,
+          candidate: msg.candidate ?? null,
+        })
+        return
+      }
+
+      if (typeof msg.sdp !== 'string' || !msg.sdp) return
+      wsSend(target.ws, {
+        type: msg.type,
+        from: client.peerId,
+        sdp: msg.sdp,
+      })
+      return
+    }
+
     if (!['offer', 'answer', 'ice'].includes(msg.type)) return
     const to = String(msg.to || '')
     const target = findClient(room, to)
-    if (!target || target.role === 'pending') return
-
-    const okPair =
-      (client.role === 'host' && target.role === 'viewer') ||
-      (client.role === 'viewer' && target.role === 'host')
-    if (!okPair) return
+    if (!target || !canRelaySignal(room, client, target, 'screen')) return
 
     const slot = Number(msg.slot)
     if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) return

@@ -18,6 +18,7 @@ import {
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
+import { VoiceMesh } from '@/lib/voice-mesh'
 import { peerKey, type SignalInbound, type SignalOutbound } from '@/lib/signal'
 
 type TileEntry = {
@@ -40,7 +41,9 @@ export function SalaPage() {
   const [waiting, setWaiting] = useState(true)
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
-
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceMuted, setVoiceMuted] = useState(true)
+  const [voiceForceMuted, setVoiceForceMuted] = useState(false)
   const watching = active && !admitPending
   useImmersive(watching)
 
@@ -51,6 +54,19 @@ export function SalaPage() {
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
   const admitPendingRef = useRef(admitPending)
   admitPendingRef.current = admitPending
+  const voiceEnabledRef = useRef(voiceEnabled)
+  voiceEnabledRef.current = voiceEnabled
+  const voiceRef = useRef<VoiceMesh | null>(null)
+  if (!voiceRef.current) {
+    voiceRef.current = new VoiceMesh({
+      send: (msg) => sendRef.current(msg),
+      iceServers: () => iceRef.current,
+      onLocalMuteChange: (muted, forceMuted) => {
+        setVoiceMuted(muted)
+        setVoiceForceMuted(forceMuted)
+      },
+    })
+  }
 
   const { send } = useSignal(
     active,
@@ -260,12 +276,18 @@ export function SalaPage() {
     if (msg.type === 'welcome') {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
+      voiceRef.current?.setSelfPeerId(msg.peerId)
+      const ve = Boolean(msg.voiceEnabled)
+      setVoiceEnabled(ve)
       if (msg.admitStatus === 'pending') {
         setAdmitPending(true)
+        await voiceRef.current?.setEnabled(false)
         return
       }
       setAdmitPending(false)
       syncSlots(msg.slots || [])
+      if (msg.voiceState) voiceRef.current?.applyVoiceState(msg.voiceState)
+      await voiceRef.current?.setEnabled(ve)
       return
     }
     if (msg.type === 'admit_result') {
@@ -274,6 +296,7 @@ export function SalaPage() {
         setDenied('')
         syncSlots(msg.slots || [])
         toast.success('Você entrou na sala')
+        if (voiceEnabledRef.current) await voiceRef.current?.setEnabled(true)
       } else {
         setDenied(msg.message || 'O host recusou sua entrada.')
         teardown()
@@ -330,6 +353,10 @@ export function SalaPage() {
       )
       return
     }
+    if (msg.type === 'roster') {
+      voiceRef.current?.setMembers(msg.members.map((m) => m.peerId))
+      return
+    }
     if (msg.type === 'offer') {
       if (admitPendingRef.current) return
       await handleOffer(msg.from, msg.slot, msg.sdp)
@@ -346,6 +373,23 @@ export function SalaPage() {
       }
       return
     }
+    if (msg.type === 'voice_offer') {
+      if (admitPendingRef.current) return
+      await voiceRef.current?.handleOffer(msg.from, msg.sdp)
+      return
+    }
+    if (msg.type === 'voice_answer') {
+      await voiceRef.current?.handleAnswer(msg.from, msg.sdp)
+      return
+    }
+    if (msg.type === 'voice_ice') {
+      await voiceRef.current?.handleIce(msg.from, msg.candidate)
+      return
+    }
+    if (msg.type === 'voice_state') {
+      voiceRef.current?.applyVoiceState(msg.peers)
+      return
+    }
     if (msg.type === 'chat_history') {
       setChatFeed(messagesToFeed(msg.messages))
       return
@@ -356,6 +400,12 @@ export function SalaPage() {
     }
     if (msg.type === 'room_updated') {
       setRoomActive(msg.active)
+      if (typeof msg.voiceEnabled === 'boolean') {
+        setVoiceEnabled(msg.voiceEnabled)
+        if (!admitPendingRef.current) {
+          void voiceRef.current?.setEnabled(msg.voiceEnabled)
+        }
+      }
       if (!msg.active) {
         toast.error('Sala desativada pelo host.')
         void leave()
@@ -369,8 +419,18 @@ export function SalaPage() {
     tilesRef.current.forEach((t) => t.tile.remove())
     tilesRef.current.clear()
     gridRef.current?.replaceChildren()
+    voiceRef.current?.teardown()
     setChatFeed([])
+    setVoiceEnabled(false)
     setWaiting(true)
+  }
+
+  async function toggleSelfMute() {
+    try {
+      await voiceRef.current?.setMuted(!voiceMuted)
+    } catch (err) {
+      action.fail(err instanceof Error ? err.message : 'Falha no microfone.')
+    }
   }
 
   async function leave() {
@@ -457,11 +517,29 @@ export function SalaPage() {
       }
     >
       <div className="flex h-full min-h-0 flex-col">
-        <header className="flex items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
           <b className="font-medium">Sala {room}</b>
-          <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>
-            Sair
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {voiceEnabled ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={voiceForceMuted}
+                  onClick={() => void toggleSelfMute()}
+                >
+                  {voiceMuted ? 'Ativar mic' : 'Mutar mic'}
+                </Button>
+                {voiceForceMuted ? (
+                  <span className="text-xs text-muted-foreground">Mic bloqueado pelo host</span>
+                ) : null}
+              </>
+            ) : null}
+            <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>
+              Sair
+            </Button>
+          </div>
         </header>
         <div
           ref={gridRef}

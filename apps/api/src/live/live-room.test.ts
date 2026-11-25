@@ -1,27 +1,33 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  applyHostMute,
+  applySelfMute,
+  canRelaySignal,
   createTestRoom,
   denyPending,
   detachClient,
   mockWs,
   pendingList,
   promotePending,
+  resetVoiceMutes,
   resolveHostJoin,
   roster,
+  testClient,
+  voiceState,
 } from './live-room'
 
 describe('live-room resolveHostJoin', () => {
   it('kicks previous host when a new host joins', () => {
     const room = createTestRoom()
     const prevWs = mockWs()
-    room.host = {
+    room.host = testClient({
       ws: prevWs,
       peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
       displayName: 'Host1',
-    }
+    })
     room.slots.add(0)
 
     const result = resolveHostJoin(room, {
@@ -40,22 +46,25 @@ describe('live-room resolveHostJoin', () => {
 describe('live-room admit', () => {
   it('promotes pending to viewer', () => {
     const room = createTestRoom()
-    room.host = {
+    room.host = testClient({
       ws: mockWs(),
       peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
       displayName: 'Host',
-    }
-    const viewerWs = mockWs()
-    room.pending.set('p1', {
-      ws: viewerWs,
-      peerId: 'p1',
-      role: 'pending',
-      roomSlug: 'test',
-      displayName: 'Ana',
-      deviceId: 'd1',
     })
+    const viewerWs = mockWs()
+    room.pending.set(
+      'p1',
+      testClient({
+        ws: viewerWs,
+        peerId: 'p1',
+        role: 'pending',
+        roomSlug: 'test',
+        displayName: 'Ana',
+        deviceId: 'd1',
+      }),
+    )
 
     const result = promotePending(room, 'p1')
     assert.equal(result.ok, true)
@@ -63,7 +72,11 @@ describe('live-room admit', () => {
     assert.equal(room.viewers.get('p1')?.role, 'viewer')
     assert.equal(room.admittedDevices.has('d1'), true)
     assert.equal(
-      viewerWs.msgs.some((m) => (m as { type?: string; accepted?: boolean }).type === 'admit_result' && (m as { accepted?: boolean }).accepted),
+      viewerWs.msgs.some(
+        (m) =>
+          (m as { type?: string; accepted?: boolean }).type === 'admit_result' &&
+          (m as { accepted?: boolean }).accepted,
+      ),
       true,
     )
     assert.deepEqual(pendingList(room), [])
@@ -71,22 +84,25 @@ describe('live-room admit', () => {
 
   it('denies pending and closes socket', () => {
     const room = createTestRoom()
-    room.host = {
+    room.host = testClient({
       ws: mockWs(),
       peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
       displayName: 'Host',
-    }
-    const viewerWs = mockWs()
-    room.pending.set('p1', {
-      ws: viewerWs,
-      peerId: 'p1',
-      role: 'pending',
-      roomSlug: 'test',
-      displayName: 'Ana',
-      sessionId: 'sess1',
     })
+    const viewerWs = mockWs()
+    room.pending.set(
+      'p1',
+      testClient({
+        ws: viewerWs,
+        peerId: 'p1',
+        role: 'pending',
+        roomSlug: 'test',
+        displayName: 'Ana',
+        sessionId: 'sess1',
+      }),
+    )
 
     const result = denyPending(room, 'p1')
     assert.equal(result.ok, true)
@@ -99,20 +115,23 @@ describe('live-room admit', () => {
 describe('live-room roster', () => {
   it('lists host and viewers', () => {
     const room = createTestRoom()
-    room.host = {
+    room.host = testClient({
       ws: mockWs(),
       peerId: 'h1',
       role: 'host',
       roomSlug: 'test',
       displayName: 'Host',
-    }
-    room.viewers.set('v1', {
-      ws: mockWs(),
-      peerId: 'v1',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'V',
     })
+    room.viewers.set(
+      'v1',
+      testClient({
+        ws: mockWs(),
+        peerId: 'v1',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'V',
+      }),
+    )
 
     const members = roster(room)
     assert.deepEqual(
@@ -131,27 +150,171 @@ describe('live-room detachClient', () => {
     const room = createTestRoom()
     live.set('test', room)
     const viewerWs = mockWs()
-    const host = {
+    const host = testClient({
       ws: mockWs(),
       peerId: 'h1',
-      role: 'host' as const,
+      role: 'host',
       roomSlug: 'test',
       displayName: 'Host',
-    }
+    })
     room.host = host
     room.slots.add(0)
-    room.viewers.set('v1', {
-      ws: viewerWs,
-      peerId: 'v1',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'V',
-    })
+    room.viewers.set(
+      'v1',
+      testClient({
+        ws: viewerWs,
+        peerId: 'v1',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'V',
+      }),
+    )
 
     detachClient(live, host)
 
     assert.equal(room.host, null)
     assert.equal(room.slots.size, 0)
     assert.equal(viewerWs.msgs.some((m) => (m as { type?: string }).type === 'host_left'), true)
+  })
+})
+
+describe('live-room voice relay', () => {
+  it('allows viewer↔viewer when voice is enabled', () => {
+    const room = createTestRoom()
+    room.voiceEnabled = true
+    const a = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'A',
+    })
+    const b = testClient({
+      ws: mockWs(),
+      peerId: 'v2',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'B',
+    })
+    assert.equal(canRelaySignal(room, a, b, 'voice'), true)
+  })
+
+  it('blocks viewer↔viewer screen share', () => {
+    const room = createTestRoom()
+    room.voiceEnabled = true
+    const a = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'A',
+    })
+    const b = testClient({
+      ws: mockWs(),
+      peerId: 'v2',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'B',
+    })
+    assert.equal(canRelaySignal(room, a, b, 'screen'), false)
+  })
+
+  it('blocks voice relay when voice is disabled', () => {
+    const room = createTestRoom()
+    room.voiceEnabled = false
+    const host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+    })
+    const viewer = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+    })
+    assert.equal(canRelaySignal(room, host, viewer, 'voice'), false)
+    assert.equal(canRelaySignal(room, host, viewer, 'screen'), true)
+  })
+})
+
+describe('live-room voice mute', () => {
+  it('host can force mute a viewer', () => {
+    const room = createTestRoom()
+    room.voiceEnabled = true
+    room.host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+    })
+    room.viewers.set(
+      'v1',
+      testClient({
+        ws: mockWs(),
+        peerId: 'v1',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'V',
+        muted: false,
+      }),
+    )
+
+    const result = applyHostMute(room, 'v1', true)
+    assert.equal(result.ok, true)
+    assert.equal(room.viewers.get('v1')?.forceMuted, true)
+    assert.equal(room.viewers.get('v1')?.muted, true)
+  })
+
+  it('self_mute is ignored under forceMuted', () => {
+    const client = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+      muted: true,
+      forceMuted: true,
+    })
+    const result = applySelfMute(client, false)
+    assert.equal(result.ok, false)
+    assert.equal(client.muted, true)
+  })
+
+  it('resetVoiceMutes clears force mute when voice turns off', () => {
+    const room = createTestRoom()
+    room.voiceEnabled = false
+    room.host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+      muted: false,
+      forceMuted: true,
+    })
+    room.viewers.set(
+      'v1',
+      testClient({
+        ws: mockWs(),
+        peerId: 'v1',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'V',
+        muted: false,
+        forceMuted: true,
+      }),
+    )
+
+    resetVoiceMutes(room)
+    const peers = voiceState(room)
+    assert.deepEqual(peers, [
+      { peerId: 'h1', muted: true, forceMuted: false },
+      { peerId: 'v1', muted: true, forceMuted: false },
+    ])
   })
 })

@@ -1,0 +1,2 @@
+ALTER TABLE rooms
+  ADD COLUMN voice_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER join_mode;

@@ -19,12 +19,14 @@ import {
 import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
+import { VoiceMesh } from '@/lib/voice-mesh'
 import {
   peerKey,
   type PendingMember,
   type RosterMember,
   type SignalInbound,
   type SignalOutbound,
+  type VoicePeerState,
 } from '@/lib/signal'
 
 const MAX_SLOTS = 8
@@ -58,16 +60,34 @@ export function HostPage() {
   const [maxViewers, setMaxViewers] = useState(8)
   const [joinMode, setJoinMode] = useState<JoinMode>('ask')
   const [newMax, setNewMax] = useState(8)
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceMuted, setVoiceMuted] = useState(true)
+  const [voiceForceMuted, setVoiceForceMuted] = useState(false)
+  const [voicePeers, setVoicePeers] = useState<VoicePeerState[]>([])
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
   sharesRef.current = shares
   panelRef.current = panel
+  const rosterRef = useRef(roster)
+  rosterRef.current = roster
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
   const peersRef = useRef(new Map<string, PeerLink>())
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+  const voiceRef = useRef<VoiceMesh | null>(null)
+  if (!voiceRef.current) {
+    voiceRef.current = new VoiceMesh({
+      send: (msg) => sendRef.current(msg),
+      iceServers: () => iceRef.current,
+      onLocalMuteChange: (muted, forceMuted) => {
+        setVoiceMuted(muted)
+        setVoiceForceMuted(forceMuted)
+      },
+      onPeersChange: (peers) => setVoicePeers(peers),
+    })
+  }
 
   const { send } = useSignal(
     panel,
@@ -84,9 +104,14 @@ export function HostPage() {
       ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
       peersRef.current.forEach((p) => p.pc.close())
       peersRef.current.clear()
+      voiceRef.current?.teardown()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
+
+  function syncVoiceMembers(members: RosterMember[]) {
+    voiceRef.current?.setMembers(members.map((m) => m.peerId))
+  }
 
   function openFromSession(data: SessionInfo) {
     setDisplayName(data.displayName)
@@ -94,6 +119,7 @@ export function HostPage() {
     setMaxViewers(data.maxViewers)
     setNewMax(data.maxViewers)
     setJoinMode(data.joinMode || 'ask')
+    setVoiceEnabled(Boolean(data.voiceEnabled))
     setDenied('')
     panelRef.current = true
     setPanel(true)
@@ -188,8 +214,23 @@ export function HostPage() {
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
       if (msg.joinMode) setJoinMode(msg.joinMode)
+      voiceRef.current?.setSelfPeerId(msg.peerId)
+      const ve = Boolean(msg.voiceEnabled)
+      setVoiceEnabled(ve)
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
       setPending(msg.pending || [])
+      if (msg.voiceState) voiceRef.current?.applyVoiceState(msg.voiceState)
+      const welcomeMembers: RosterMember[] = [
+        { peerId: msg.peerId, role: 'host', displayName: msg.displayName },
+        ...(msg.viewers || []).map((v) => ({
+          peerId: v.peerId,
+          role: 'viewer' as const,
+          displayName: v.displayName,
+        })),
+      ]
+      setRoster(welcomeMembers)
+      syncVoiceMembers(welcomeMembers)
+      await voiceRef.current?.setEnabled(ve)
       for (const [slot, share] of sharesRef.current) {
         await offerAllViewers(slot, share.stream)
       }
@@ -245,6 +286,22 @@ export function HostPage() {
       }
       return
     }
+    if (msg.type === 'voice_offer') {
+      await voiceRef.current?.handleOffer(msg.from, msg.sdp)
+      return
+    }
+    if (msg.type === 'voice_answer') {
+      await voiceRef.current?.handleAnswer(msg.from, msg.sdp)
+      return
+    }
+    if (msg.type === 'voice_ice') {
+      await voiceRef.current?.handleIce(msg.from, msg.candidate)
+      return
+    }
+    if (msg.type === 'voice_state') {
+      voiceRef.current?.applyVoiceState(msg.peers)
+      return
+    }
     if (msg.type === 'chat_history') {
       setChatFeed(messagesToFeed(msg.messages))
       return
@@ -263,6 +320,7 @@ export function HostPage() {
         if (!next.has(peerId)) closePeer(key)
       }
       viewersRef.current = next
+      syncVoiceMembers(msg.members)
       return
     }
     if (msg.type === 'admit_request' || msg.type === 'pending') {
@@ -280,6 +338,11 @@ export function HostPage() {
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
       if (msg.joinMode) setJoinMode(msg.joinMode)
+      if (typeof msg.voiceEnabled === 'boolean') {
+        setVoiceEnabled(msg.voiceEnabled)
+        if (msg.voiceEnabled) syncVoiceMembers(rosterRef.current)
+        void voiceRef.current?.setEnabled(msg.voiceEnabled)
+      }
     }
   }
 
@@ -334,6 +397,7 @@ export function HostPage() {
 
   async function logout() {
     ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
+    voiceRef.current?.teardown()
     await api('/api/logout', { method: 'POST' })
     setPanel(false)
     navigate('/salas')
@@ -348,6 +412,7 @@ export function HostPage() {
         active?: boolean
         maxViewers?: number
         joinMode?: JoinMode
+        voiceEnabled?: boolean
       }>(`/api/rooms/${encodeURIComponent(room)}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -358,7 +423,24 @@ export function HostPage() {
         setNewMax(data.maxViewers)
       }
       if (data.joinMode) setJoinMode(data.joinMode)
+      if (typeof data.voiceEnabled === 'boolean') {
+        setVoiceEnabled(data.voiceEnabled)
+        if (data.voiceEnabled) syncVoiceMembers(rosterRef.current)
+        void voiceRef.current?.setEnabled(data.voiceEnabled)
+      }
     })
+  }
+
+  async function toggleSelfMute() {
+    try {
+      await voiceRef.current?.setMuted(!voiceMuted)
+    } catch (err) {
+      action.fail(err instanceof Error ? err.message : 'Falha no microfone.')
+    }
+  }
+
+  function hostMutePeer(peerId: string, muted: boolean) {
+    sendRef.current({ type: 'voice_mute', peerId, muted })
   }
 
   function admit(peerId: string, accept: boolean) {
@@ -524,10 +606,39 @@ export function HostPage() {
               <p className="text-sm text-muted-foreground">Ninguém assistindo.</p>
             ) : (
               <>
-                <ul className="text-sm">
-                  {viewers.map((v) => (
-                    <li key={v.peerId}>{v.displayName}</li>
-                  ))}
+                <ul className="flex flex-col gap-2 text-sm">
+                  {viewers.map((v) => {
+                    const vs = voicePeers.find((p) => p.peerId === v.peerId)
+                    return (
+                      <li
+                        key={v.peerId}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span>
+                          {v.displayName}
+                          {voiceEnabled ? (
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              {vs?.forceMuted
+                                ? 'mutado pelo host'
+                                : vs?.muted
+                                  ? 'mudo'
+                                  : 'falando'}
+                            </span>
+                          ) : null}
+                        </span>
+                        {voiceEnabled ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
+                          >
+                            {vs?.forceMuted ? 'Liberar mic' : 'Mutar'}
+                          </Button>
+                        ) : null}
+                      </li>
+                    )
+                  })}
                 </ul>
                 <Button type="button" variant="outline" size="sm" onClick={() => void kickAllViewers()}>
                   Remover todos
@@ -535,6 +646,32 @@ export function HostPage() {
               </>
             )}
           </section>
+
+          {voiceEnabled ? (
+            <section className="space-y-2 rounded-lg border border-border p-3">
+              <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                Seu microfone
+              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={voiceForceMuted}
+                  onClick={() => void toggleSelfMute()}
+                >
+                  {voiceMuted ? 'Ativar mic' : 'Mutar mic'}
+                </Button>
+                {voiceForceMuted ? (
+                  <span className="text-sm text-muted-foreground">Mic bloqueado</span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    {voiceMuted ? 'Você está mudo' : 'Mic ligado'}
+                  </span>
+                )}
+              </div>
+            </section>
+          ) : null}
 
           <section className="space-y-3 rounded-lg border border-border p-3">
             <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Sala</h2>
@@ -571,6 +708,22 @@ export function HostPage() {
                 }
               >
                 {joinMode === 'ask' ? 'Tornar pública' : 'Exigir aceite'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void patchRoom(
+                    { voiceEnabled: !voiceEnabled },
+                    {
+                      pending: 'Atualizando…',
+                      success: voiceEnabled ? 'Voz desligada' : 'Voz ligada',
+                    },
+                  )
+                }
+              >
+                {voiceEnabled ? 'Desligar voz' : 'Ligar voz'}
               </Button>
             </div>
             <form

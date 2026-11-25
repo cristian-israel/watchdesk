@@ -48,6 +48,7 @@ export type DeviceRoom = {
   active: boolean
   maxViewers: number
   joinMode: JoinMode
+  voiceEnabled: boolean
   links: string[]
 }
 
@@ -65,6 +66,7 @@ export type SessionInfo = {
   active: boolean
   maxViewers: number
   joinMode: JoinMode
+  voiceEnabled: boolean
   links: string[]
   status?: 'pending' | 'admitted'
 }

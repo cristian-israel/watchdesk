@@ -18,6 +18,14 @@ export type LiveClient = {
   displayName: string
   sessionId?: string
   deviceId?: string
+  muted: boolean
+  forceMuted: boolean
+}
+
+export type VoicePeerState = {
+  peerId: string
+  muted: boolean
+  forceMuted: boolean
 }
 
 export type RuntimeRoom = {
@@ -26,6 +34,7 @@ export type RuntimeRoom = {
   maxViewers: number
   active: boolean
   joinMode: JoinMode
+  voiceEnabled: boolean
   host: LiveClient | null
   slots: Set<number>
   viewers: Map<string, LiveClient>
@@ -39,11 +48,13 @@ export type RoomRow = {
   max_viewers: number
   active: number | boolean
   join_mode?: string
+  voice_enabled?: number | boolean
 }
 
 export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): RuntimeRoom {
   let r = live.get(row.slug)
   const joinMode: JoinMode = row.join_mode === 'open' ? 'open' : 'ask'
+  const voiceEnabled = Boolean(row.voice_enabled)
   if (!r) {
     r = {
       slug: row.slug,
@@ -51,6 +62,7 @@ export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): Runtim
       maxViewers: row.max_viewers,
       active: Boolean(row.active),
       joinMode,
+      voiceEnabled,
       host: null,
       slots: new Set(),
       viewers: new Map(),
@@ -63,6 +75,7 @@ export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): Runtim
     r.maxViewers = row.max_viewers
     r.active = Boolean(row.active)
     r.joinMode = joinMode
+    r.voiceEnabled = voiceEnabled
   }
   return r
 }
@@ -113,6 +126,66 @@ export function broadcastRoom(room: RuntimeRoom, msg: unknown, exceptPeerId: str
 export function findClient(room: RuntimeRoom, peerId: string) {
   if (room.host && room.host.peerId === peerId) return room.host
   return room.viewers.get(peerId) || room.pending.get(peerId) || null
+}
+
+export function admittedClients(room: RuntimeRoom): LiveClient[] {
+  const list: LiveClient[] = []
+  if (room.host) list.push(room.host)
+  for (const v of room.viewers.values()) list.push(v)
+  return list
+}
+
+export function voiceState(room: RuntimeRoom): VoicePeerState[] {
+  return admittedClients(room).map((c) => ({
+    peerId: c.peerId,
+    muted: c.muted,
+    forceMuted: c.forceMuted,
+  }))
+}
+
+export function resetVoiceMutes(room: RuntimeRoom) {
+  for (const c of admittedClients(room)) {
+    c.muted = true
+    c.forceMuted = false
+  }
+}
+
+export function isAdmittedRole(role: ClientRole) {
+  return role === 'host' || role === 'viewer'
+}
+
+/** Screen share: host↔viewer only. Voice mesh: any admitted pair. */
+export function canRelaySignal(
+  room: RuntimeRoom,
+  from: LiveClient,
+  to: LiveClient,
+  channel: 'screen' | 'voice',
+) {
+  if (!isAdmittedRole(from.role) || !isAdmittedRole(to.role)) return false
+  if (channel === 'voice') {
+    if (!room.voiceEnabled) return false
+    return from.peerId !== to.peerId
+  }
+  return (
+    (from.role === 'host' && to.role === 'viewer') ||
+    (from.role === 'viewer' && to.role === 'host')
+  )
+}
+
+export function applySelfMute(client: LiveClient, muted: boolean) {
+  if (client.forceMuted) return { ok: false as const, reason: 'force_muted' as const }
+  client.muted = muted
+  return { ok: true as const }
+}
+
+export function applyHostMute(room: RuntimeRoom, targetPeerId: string, muted: boolean) {
+  const target = findClient(room, targetPeerId)
+  if (!target || !isAdmittedRole(target.role)) {
+    return { ok: false as const, message: 'Participante não encontrado.' }
+  }
+  target.forceMuted = muted
+  if (muted) target.muted = true
+  return { ok: true as const, target }
 }
 
 function clearMediaSlots(room: RuntimeRoom) {
@@ -202,6 +275,9 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
       wsSend(p.ws, { type: 'host_left' })
     }
     broadcastRoom(room, { type: 'roster', members: roster(room) })
+    if (room.voiceEnabled) {
+      broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+    }
     return
   }
 
@@ -221,6 +297,9 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
       displayName: client.displayName,
     })
     broadcastRoom(room, { type: 'roster', members: roster(room) })
+    if (room.voiceEnabled) {
+      broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+    }
   }
 }
 
@@ -266,11 +345,23 @@ export function createTestRoom(slug = 'test'): RuntimeRoom {
     maxViewers: 8,
     active: true,
     joinMode: 'ask',
+    voiceEnabled: false,
     host: null,
     slots: new Set(),
     viewers: new Map(),
     pending: new Map(),
     admittedDevices: new Set(),
+  }
+}
+
+export function testClient(
+  partial: Omit<LiveClient, 'muted' | 'forceMuted'> &
+    Partial<Pick<LiveClient, 'muted' | 'forceMuted'>>,
+): LiveClient {
+  return {
+    muted: true,
+    forceMuted: false,
+    ...partial,
   }
 }
 

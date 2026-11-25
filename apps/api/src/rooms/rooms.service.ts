@@ -18,6 +18,7 @@ export type RoomRow = RowDataPacket & {
   device_id: string
   creator_name: string
   join_mode: string
+  voice_enabled: number | boolean
   max_viewers: number
   active: number | boolean
 }
@@ -36,6 +37,7 @@ export class RoomsService {
       active: Boolean(row.active),
       maxViewers: row.max_viewers,
       joinMode: normalizeJoinMode(row.join_mode),
+      voiceEnabled: Boolean(row.voice_enabled),
       links: viewerLinks(row.slug),
     }
   }
@@ -105,7 +107,12 @@ export class RoomsService {
     await this.db.query('DELETE FROM recent_rooms WHERE device_id = ?', [deviceId])
   }
 
-  async createRoom(device: DeviceRow, joinMode: 'open' | 'ask', maxViewers: number) {
+  async createRoom(
+    device: DeviceRow,
+    joinMode: 'open' | 'ask',
+    maxViewers: number,
+    voiceEnabled = false,
+  ) {
     const displayName = device.display_name || ''
     let slug = ''
     let roomId = 0
@@ -115,9 +122,9 @@ export class RoomsService {
       try {
         const [ins] = await this.db.getPool().query<ResultSetHeader>(
           `INSERT INTO rooms
-            (slug, device_id, creator_name, join_mode, max_viewers, active)
-           VALUES (?, ?, ?, ?, ?, 1)`,
-          [slug, device.id, displayName, joinMode, maxViewers],
+            (slug, device_id, creator_name, join_mode, voice_enabled, max_viewers, active)
+           VALUES (?, ?, ?, ?, ?, ?, 1)`,
+          [slug, device.id, displayName, joinMode, voiceEnabled ? 1 : 0, maxViewers],
         )
         roomId = ins.insertId
         break

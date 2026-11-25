@@ -20,6 +20,12 @@ export type PendingMember = {
 
 export type JoinMode = 'open' | 'ask'
 
+export type VoicePeerState = {
+  peerId: string
+  muted: boolean
+  forceMuted: boolean
+}
+
 export type SignalInbound =
   | {
       type: 'welcome'
@@ -34,6 +40,8 @@ export type SignalInbound =
       maxViewers: number
       active: boolean
       joinMode?: JoinMode
+      voiceEnabled?: boolean
+      voiceState?: VoicePeerState[]
       admitStatus?: 'pending' | 'admitted'
     }
   | { type: 'error'; message: string }
@@ -45,11 +53,21 @@ export type SignalInbound =
   | { type: 'offer'; from: string; slot: number; sdp: string }
   | { type: 'answer'; from: string; slot: number; sdp: string }
   | { type: 'ice'; from: string; slot: number; candidate: RTCIceCandidateInit | null }
+  | { type: 'voice_offer'; from: string; sdp: string }
+  | { type: 'voice_answer'; from: string; sdp: string }
+  | { type: 'voice_ice'; from: string; candidate: RTCIceCandidateInit | null }
+  | { type: 'voice_state'; peers: VoicePeerState[] }
   | { type: 'chat'; message: ChatMessage }
   | { type: 'chat_history'; messages: ChatMessage[] }
   | { type: 'roster'; members: RosterMember[] }
   | { type: 'auth_changed'; message: string }
-  | { type: 'room_updated'; active: boolean; maxViewers: number; joinMode?: JoinMode }
+  | {
+      type: 'room_updated'
+      active: boolean
+      maxViewers: number
+      joinMode?: JoinMode
+      voiceEnabled?: boolean
+    }
   | { type: 'admit_request'; peerId: string; displayName: string }
   | { type: 'admit_result'; accepted: boolean; message?: string; slots?: number[] }
   | { type: 'pending'; pending: PendingMember[] }
@@ -61,6 +79,11 @@ export type SignalOutbound =
   | { type: 'offer'; to: string; slot: number; sdp: string }
   | { type: 'answer'; to: string; slot: number; sdp: string }
   | { type: 'ice'; to: string; slot: number; candidate: RTCIceCandidateInit | null }
+  | { type: 'voice_offer'; to: string; sdp: string }
+  | { type: 'voice_answer'; to: string; sdp: string }
+  | { type: 'voice_ice'; to: string; candidate: RTCIceCandidateInit | null }
+  | { type: 'self_mute'; muted: boolean }
+  | { type: 'voice_mute'; peerId: string; muted: boolean }
   | { type: 'chat'; body: string }
   | { type: 'admit'; peerId: string; accept: boolean }
 

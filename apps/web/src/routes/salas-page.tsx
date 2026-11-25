@@ -14,12 +14,13 @@ export function SalasPage() {
   const action = useActionDialog()
   const { rooms, refresh, displayName } = useProfile()
   const [joinMode, setJoinMode] = useState<'ask' | 'open'>('ask')
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
 
   async function novaTransmissao() {
     await action.run({ pending: 'Criando…', success: 'Sala pronta' }, async () => {
       const created = await apiOrThrow<SessionInfo>('/api/rooms', {
         method: 'POST',
-        body: JSON.stringify({ joinMode, maxViewers: 8 }),
+        body: JSON.stringify({ joinMode, maxViewers: 8, voiceEnabled }),
       })
       await refresh()
       navigate(`/salas/${encodeURIComponent(created.room)}`)
@@ -87,6 +88,15 @@ export function SalasPage() {
                 Público (link basta)
               </Button>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={voiceEnabled}
+                onChange={(e) => setVoiceEnabled(e.target.checked)}
+                className="size-4 rounded border border-input"
+              />
+              Ativar voz na sala
+            </label>
             <Button type="button" disabled={action.busy || !displayName} onClick={() => void novaTransmissao()}>
               Começar a transmitir
             </Button>
@@ -115,8 +125,8 @@ export function SalasPage() {
                           <p className="font-medium">{room.slug}</p>
                           <p className="text-sm text-muted-foreground">
                             {room.active ? 'ativa' : 'desativada'} ·{' '}
-                            {room.joinMode === 'open' ? 'pública' : 'com aceite'} · máx.{' '}
-                            {room.maxViewers}
+                            {room.joinMode === 'open' ? 'pública' : 'com aceite'}
+                            {room.voiceEnabled ? ' · voz' : ''} · máx. {room.maxViewers}
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">

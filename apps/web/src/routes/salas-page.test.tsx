@@ -47,7 +47,7 @@ describe('SalasPage', () => {
 
     expect(mockedApiOrThrow).toHaveBeenCalledWith('/api/rooms', {
       method: 'POST',
-      body: JSON.stringify({ joinMode: 'ask', maxViewers: 8 }),
+      body: JSON.stringify({ joinMode: 'ask', maxViewers: 8, voiceEnabled: false }),
     })
   })
 })

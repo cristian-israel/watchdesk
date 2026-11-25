@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   device_id CHAR(64) NOT NULL,
   creator_name VARCHAR(80) NOT NULL,
   join_mode ENUM('open', 'ask') NOT NULL DEFAULT 'ask',
+  voice_enabled TINYINT(1) NOT NULL DEFAULT 0,
   max_viewers TINYINT UNSIGNED NOT NULL DEFAULT 8,
   active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

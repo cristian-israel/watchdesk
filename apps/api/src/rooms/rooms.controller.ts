@@ -20,7 +20,7 @@ import {
 } from '../common/http-util'
 import { DevicesService } from '../devices/devices.service'
 import { LiveService } from '../live/live.service'
-import { broadcastRoom } from '../live/live-room'
+import { broadcastRoom, resetVoiceMutes, voiceState } from '../live/live-room'
 import { SessionsService } from '../sessions/sessions.service'
 import { RoomsService } from './rooms.service'
 
@@ -37,7 +37,7 @@ export class RoomsController {
   async create(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-    @Body() body: { joinMode?: string; maxViewers?: number },
+    @Body() body: { joinMode?: string; maxViewers?: number; voiceEnabled?: boolean },
   ) {
     const device = await this.devices.ensure(req, res)
     const displayName = device.display_name || ''
@@ -45,8 +45,9 @@ export class RoomsController {
     let maxViewers = Number(body?.maxViewers ?? 8)
     if (!Number.isInteger(maxViewers) || maxViewers < 1 || maxViewers > 8) maxViewers = 8
     const joinMode = normalizeJoinMode(body?.joinMode)
+    const voiceEnabled = Boolean(body?.voiceEnabled)
     try {
-      const created = await this.rooms.createRoom(device, joinMode, maxViewers)
+      const created = await this.rooms.createRoom(device, joinMode, maxViewers, voiceEnabled)
       setSessionCookie(res, created.sess.id, req)
       res.status(201)
       return created.payload
@@ -71,6 +72,7 @@ export class RoomsController {
       active: Boolean(row.active),
       maxViewers: row.max_viewers,
       joinMode: normalizeJoinMode(row.join_mode),
+      voiceEnabled: Boolean(row.voice_enabled),
     }
   }
 
@@ -160,7 +162,12 @@ export class RoomsController {
   async patch(
     @Param('slug') slug: string,
     @Req() req: Request,
-    @Body() body: { active?: boolean; maxViewers?: number; joinMode?: string },
+    @Body() body: {
+      active?: boolean
+      maxViewers?: number
+      joinMode?: string
+      voiceEnabled?: boolean
+    },
   ) {
     const cookies = parseCookies(req)
     const session = await this.sessions.get(cookies.wd_session)
@@ -188,6 +195,10 @@ export class RoomsController {
       updates.push('join_mode = ?')
       params.push(normalizeJoinMode(body.joinMode))
     }
+    if (typeof body.voiceEnabled === 'boolean') {
+      updates.push('voice_enabled = ?')
+      params.push(body.voiceEnabled ? 1 : 0)
+    }
     if (!updates.length) throw new HttpException('Nada para atualizar.', 400)
 
     await this.rooms.updateFields(row.id, updates, params)
@@ -195,11 +206,16 @@ export class RoomsController {
     const updated = await this.rooms.findBySlug(slug)
     if (!updated) throw new HttpException('Sala não encontrada.', 404)
     const rt = this.live.ensure(updated)
+    if (typeof body.voiceEnabled === 'boolean' && !rt.voiceEnabled) {
+      resetVoiceMutes(rt)
+      broadcastRoom(rt, { type: 'voice_state', peers: voiceState(rt) })
+    }
     broadcastRoom(rt, {
       type: 'room_updated',
       active: rt.active,
       maxViewers: rt.maxViewers,
       joinMode: rt.joinMode,
+      voiceEnabled: rt.voiceEnabled,
     })
     return {
       ok: true,
@@ -207,6 +223,7 @@ export class RoomsController {
       active: Boolean(updated.active),
       maxViewers: updated.max_viewers,
       joinMode: normalizeJoinMode(updated.join_mode),
+      voiceEnabled: Boolean(updated.voice_enabled),
       links: viewerLinks(slug),
     }
   }
