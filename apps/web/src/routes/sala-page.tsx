@@ -18,8 +18,9 @@ import {
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
+import { MAX_SLOTS, ScreenShareSession, normalizeSlots } from '@/lib/screen-share'
 import { VoiceMesh } from '@/lib/voice-mesh'
-import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
+import type { RosterMember, SignalInbound, SignalOutbound, SlotInfo } from '@/lib/signal'
 
 type TileEntry = {
   name: string
@@ -72,11 +73,12 @@ export function SalaPage() {
   const [speakingIds, setSpeakingIds] = useState<string[]>([])
   const [selfPeerId, setSelfPeerId] = useState('')
   const [roster, setRoster] = useState<RosterMember[]>([])
+  const [canShareScreen, setCanShareScreen] = useState(false)
+  const [localSharing, setLocalSharing] = useState(false)
   const watching = active && !admitPending
   useImmersive(watching)
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
-  const peersRef = useRef(new Map<string, RTCPeerConnection>())
   const tilesRef = useRef(new Map<number, TileEntry>())
   const gridRef = useRef<HTMLDivElement>(null)
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
@@ -84,6 +86,10 @@ export function SalaPage() {
   admitPendingRef.current = admitPending
   const voiceEnabledRef = useRef(voiceEnabled)
   voiceEnabledRef.current = voiceEnabled
+  const selfPeerIdRef = useRef('')
+  selfPeerIdRef.current = selfPeerId
+  const rosterRef = useRef(roster)
+  rosterRef.current = roster
   const voiceRef = useRef<VoiceMesh | null>(null)
   if (!voiceRef.current) {
     voiceRef.current = new VoiceMesh({
@@ -94,6 +100,28 @@ export function SalaPage() {
         setVoiceForceMuted(forceMuted)
       },
       onSpeakingChange: (ids) => setSpeakingIds(ids),
+    })
+  }
+
+  const screenRef = useRef<ScreenShareSession | null>(null)
+  if (!screenRef.current) {
+    screenRef.current = new ScreenShareSession({
+      send: (msg) => sendRef.current(msg),
+      iceServers: () => iceRef.current,
+      selfPeerId: () => selfPeerIdRef.current,
+      memberIds: () =>
+        rosterRef.current.map((m) => m.peerId).filter((id) => id !== selfPeerIdRef.current),
+      onRemoteStream: (info, stream) => {
+        const tile = ensureTile(info)
+        if (!tile) return
+        tile.video.srcObject = stream
+        if (stream.getAudioTracks().length) tile.video.muted = false
+        void tile.video.play().catch(() => {
+          /* autoplay */
+        })
+        setWaiting(false)
+      },
+      onRemoteSlotRemoved: (slot) => removeTile(slot),
     })
   }
 
@@ -213,14 +241,23 @@ export function SalaPage() {
     })
   }
 
-  function ensureTile(slot: number) {
+  function ensureTile(info: SlotInfo | number) {
+    const slotInfo: SlotInfo =
+      typeof info === 'number'
+        ? { slot: info, peerId: '', displayName: `Tela ${info + 1}` }
+        : info
     const grid = gridRef.current
     if (!grid) return null
-    let entry = tilesRef.current.get(slot)
-    if (entry) return entry
+    let entry = tilesRef.current.get(slotInfo.slot)
+    if (entry) {
+      const tag = entry.tile.querySelector('.tag') as HTMLElement
+      tag.textContent = slotInfo.displayName || `Tela ${slotInfo.slot + 1}`
+      entry.name = tag.textContent
+      return entry
+    }
 
     const tile = document.createElement('div')
-    tile.dataset.slot = String(slot)
+    tile.dataset.slot = String(slotInfo.slot)
     tile.className =
       'tile relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
     tile.innerHTML =
@@ -229,7 +266,7 @@ export function SalaPage() {
       '<span class="state absolute inset-0 grid place-items-center text-sm text-muted-foreground pointer-events-none">Conectando…</span>' +
       '<button type="button" class="fs absolute right-2.5 top-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white">Tela cheia</button>'
     const tag = tile.querySelector('.tag') as HTMLElement
-    tag.textContent = `Tela ${slot + 1}`
+    tag.textContent = slotInfo.displayName || `Tela ${slotInfo.slot + 1}`
     const video = tile.querySelector('video') as HTMLVideoElement
     const stateEl = tile.querySelector('.state') as HTMLElement
     tile.querySelector('.fs')!.addEventListener('click', () => {
@@ -246,8 +283,8 @@ export function SalaPage() {
       })
     })
     grid.appendChild(tile)
-    entry = { name: `Tela ${slot + 1}`, video, stateEl, tile }
-    tilesRef.current.set(slot, entry)
+    entry = { name: tag.textContent, video, stateEl, tile }
+    tilesRef.current.set(slotInfo.slot, entry)
     return entry
   }
 
@@ -256,65 +293,20 @@ export function SalaPage() {
     if (!entry) return
     tilesRef.current.delete(slot)
     entry.tile.remove()
+    setWaiting(!tilesRef.current.size && !screenRef.current?.localSlotCount)
   }
 
-  function syncSlots(slots: number[]) {
-    const wanted = new Set(slots)
+  function syncSlots(slots: SlotInfo[]) {
+    const self = selfPeerIdRef.current
+    const remote = slots.filter((s) => s.peerId !== self)
+    const wanted = new Set(remote.map((s) => s.slot))
     for (const slot of [...tilesRef.current.keys()]) {
       if (!wanted.has(slot)) removeTile(slot)
     }
-    for (const slot of slots) ensureTile(slot)
-    setWaiting(!slots.length)
-  }
-
-  async function ensurePc(from: string, slot: number) {
-    const key = peerKey(from, slot)
-    let pc = peersRef.current.get(key)
-    if (pc) return pc
-
-    const tile = ensureTile(slot)
-    if (!tile) throw new Error('grid')
-
-    pc = new RTCPeerConnection({ iceServers: iceRef.current })
-    peersRef.current.set(key, pc)
-
-    pc.ontrack = (e) => {
-      const stream = e.streams[0] || new MediaStream([e.track])
-      tile.video.srcObject = stream
-      if (stream.getAudioTracks().length) {
-        tile.video.muted = false
-      }
-      void tile.video.play().catch(() => {
-        /* autoplay — retry on next user gesture via resumeMediaPlayback */
-      })
-    }
-    pc.onicecandidate = (ev) => {
-      sendRef.current({
-        type: 'ice',
-        to: from,
-        slot,
-        candidate: ev.candidate ? ev.candidate.toJSON() : null,
-      })
-    }
-    pc.onconnectionstatechange = () => {
-      if (['failed', 'closed'].includes(pc!.connectionState)) {
-        peersRef.current.delete(key)
-        try {
-          pc!.close()
-        } catch {
-          /* ok */
-        }
-      }
-    }
-    return pc
-  }
-
-  async function handleOffer(from: string, slot: number, sdp: string) {
-    const pc = await ensurePc(from, slot)
-    await pc.setRemoteDescription({ type: 'offer', sdp })
-    const answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    sendRef.current({ type: 'answer', to: from, slot, sdp: answer.sdp || '' })
+    for (const info of remote) ensureTile(info)
+    screenRef.current?.applySlots(slots)
+    setWaiting(!remote.length && !screenRef.current?.localSlotCount)
+    setLocalSharing((screenRef.current?.localSlotCount || 0) > 0)
   }
 
   async function onSignal(msg: SignalInbound) {
@@ -322,16 +314,18 @@ export function SalaPage() {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
       setSelfPeerId(msg.peerId)
+      selfPeerIdRef.current = msg.peerId
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
+      setCanShareScreen(Boolean(msg.canShareScreen))
       if (msg.admitStatus === 'pending') {
         setAdmitPending(true)
         await voiceRef.current?.setEnabled(false)
         return
       }
       setAdmitPending(false)
-      syncSlots(msg.slots || [])
+      syncSlots(normalizeSlots(msg.slots))
       if (msg.voiceState) voiceRef.current?.applyVoiceState(msg.voiceState)
       await voiceRef.current?.setEnabled(ve)
       return
@@ -340,7 +334,7 @@ export function SalaPage() {
       if (msg.accepted) {
         setAdmitPending(false)
         setDenied('')
-        syncSlots(msg.slots || [])
+        syncSlots(normalizeSlots(msg.slots))
         toast.success('Você entrou na sala')
         if (voiceEnabledRef.current) await voiceRef.current?.setEnabled(true)
       } else {
@@ -362,24 +356,33 @@ export function SalaPage() {
       return
     }
     if (msg.type === 'slots') {
-      if (!admitPendingRef.current) syncSlots(msg.slots)
+      if (!admitPendingRef.current) syncSlots(normalizeSlots(msg.slots))
+      return
+    }
+    if (msg.type === 'screen_allow') {
+      setCanShareScreen(msg.canShareScreen)
+      if (!msg.canShareScreen) {
+        screenRef.current?.stopAllLocal(true)
+        setLocalSharing(false)
+      }
       return
     }
     if (msg.type === 'host_joined') {
       setChatFeed((prev) =>
         appendSystem(prev, joinedLine(msg.displayName, 'host'), `host-join-${msg.peerId}`),
       )
+      await screenRef.current?.onMemberJoined(msg.peerId)
       return
     }
     if (msg.type === 'host_left') {
       setChatFeed((prev) => appendSystem(prev, 'O host saiu', `host-leave-${Date.now()}`))
-      peersRef.current.forEach((pc) => pc.close())
-      peersRef.current.clear()
+      screenRef.current?.teardown()
       tilesRef.current.forEach((t) => {
         t.video.srcObject = null
         t.tile.classList.remove('live')
         t.stateEl.textContent = 'Aguardando o host transmitir…'
       })
+      setLocalSharing(false)
       setWaiting(true)
       return
     }
@@ -387,6 +390,7 @@ export function SalaPage() {
       setChatFeed((prev) =>
         appendSystem(prev, joinedLine(msg.displayName, 'viewer'), `join-${msg.peerId}`),
       )
+      await screenRef.current?.onMemberJoined(msg.peerId)
       return
     }
     if (msg.type === 'viewer_left') {
@@ -397,6 +401,7 @@ export function SalaPage() {
           `leave-${msg.peerId}`,
         ),
       )
+      screenRef.current?.onMemberLeft(msg.peerId)
       return
     }
     if (msg.type === 'roster') {
@@ -406,18 +411,16 @@ export function SalaPage() {
     }
     if (msg.type === 'offer') {
       if (admitPendingRef.current) return
-      await handleOffer(msg.from, msg.slot, msg.sdp)
+      await screenRef.current?.handleOffer(msg.from, msg.slot, msg.sdp)
+      return
+    }
+    if (msg.type === 'answer') {
+      await screenRef.current?.handleAnswer(msg.from, msg.slot, msg.sdp)
       return
     }
     if (msg.type === 'ice') {
       if (admitPendingRef.current) return
-      const pc = peersRef.current.get(peerKey(msg.from, msg.slot))
-      if (!pc || !msg.candidate) return
-      try {
-        await pc.addIceCandidate(msg.candidate)
-      } catch {
-        /* race */
-      }
+      await screenRef.current?.handleIce(msg.from, msg.slot, msg.candidate)
       return
     }
     if (msg.type === 'voice_offer') {
@@ -461,8 +464,7 @@ export function SalaPage() {
   }
 
   function teardown() {
-    peersRef.current.forEach((pc) => pc.close())
-    peersRef.current.clear()
+    screenRef.current?.teardown()
     tilesRef.current.forEach((t) => t.tile.remove())
     tilesRef.current.clear()
     gridRef.current?.replaceChildren()
@@ -472,6 +474,8 @@ export function SalaPage() {
     setSpeakingIds([])
     setSelfPeerId('')
     setVoiceEnabled(false)
+    setCanShareScreen(false)
+    setLocalSharing(false)
     setWaiting(true)
   }
 
@@ -482,6 +486,31 @@ export function SalaPage() {
     } catch (err) {
       action.fail(err instanceof Error ? err.message : 'Falha no microfone.')
     }
+  }
+
+  async function shareScreen() {
+    if (!canShareScreen) return
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      action.fail('Este endereço não permite compartilhar tela. Use localhost ou HTTPS.')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30 },
+        audio: true,
+      })
+      await screenRef.current!.publish(stream)
+      setLocalSharing(true)
+      setWaiting(false)
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') return
+      action.fail(err instanceof Error ? err.message : 'Falha ao compartilhar.')
+    }
+  }
+
+  function stopSharing() {
+    screenRef.current?.stopAllLocal(true)
+    setLocalSharing(false)
   }
 
   async function leave() {
@@ -584,6 +613,23 @@ export function SalaPage() {
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {canShareScreen ? (
+              localSharing ? (
+                <Button type="button" variant="outline" size="sm" onClick={() => stopSharing()}>
+                  Parar tela
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={tilesRef.current.size >= MAX_SLOTS}
+                  onClick={() => void shareScreen()}
+                >
+                  Compartilhar tela
+                </Button>
+              )
+            ) : null}
             {voiceEnabled ? (
               <>
                 <Button

@@ -20,14 +20,18 @@ import {
   applyHostMute,
   applySelfMute,
   broadcastRoom,
+  canRelayScreen,
   canRelaySignal,
+  claimSlot,
   denyPending,
   detachClient,
   findClient,
   pendingList,
   promotePending,
+  releaseSlot,
   resolveHostJoin,
   roster,
+  setScreenAllow,
   slotList,
   voiceState,
   wsSend,
@@ -199,6 +203,13 @@ export class SignalService {
       joinMode,
       voiceEnabled: room.voiceEnabled,
       voiceState: asPending ? [] : voiceState(room),
+      screenAllowed: session.role === 'host' ? [...room.screenAllowed] : undefined,
+      canShareScreen:
+        session.role === 'host'
+          ? true
+          : asPending
+            ? false
+            : room.screenAllowed.has(peerId),
       admitStatus: asPending ? 'pending' : session.role === 'viewer' ? 'admitted' : undefined,
     })
 
@@ -283,13 +294,32 @@ export class SignalService {
 
     if (client.role === 'pending') return
 
-    if (client.role === 'host' && (msg.type === 'slot_add' || msg.type === 'slot_remove')) {
+    if (client.role === 'host' && msg.type === 'screen_allow') {
+      const peerId = String(msg.peerId || '')
+      const allow = Boolean(msg.allow)
+      const result = setScreenAllow(room, peerId, allow)
+      if (!result.ok) {
+        wsSend(client.ws, { type: 'error', message: result.message })
+        return
+      }
+      wsSend(result.target.ws, { type: 'screen_allow', allow, canShareScreen: allow })
+      if (!allow) {
+        broadcastRoom(room, { type: 'slots', slots: slotList(room) })
+      }
+      wsSend(client.ws, { type: 'screen_allowed', peerIds: [...room.screenAllowed] })
+      return
+    }
+
+    if (msg.type === 'slot_add' || msg.type === 'slot_remove') {
       const slot = Number(msg.slot)
       if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) return
-      if (msg.type === 'slot_add') room.slots.add(slot)
-      else room.slots.delete(slot)
-      const payload = { type: 'slots', slots: slotList(room) }
-      for (const v of room.viewers.values()) wsSend(v.ws, payload)
+      const result =
+        msg.type === 'slot_add' ? claimSlot(room, slot, client) : releaseSlot(room, slot, client)
+      if (!result.ok) {
+        wsSend(client.ws, { type: 'error', message: result.message })
+        return
+      }
+      broadcastRoom(room, { type: 'slots', slots: slotList(room) })
       return
     }
 
@@ -364,10 +394,14 @@ export class SignalService {
     if (!['offer', 'answer', 'ice'].includes(msg.type)) return
     const to = String(msg.to || '')
     const target = findClient(room, to)
-    if (!target || !canRelaySignal(room, client, target, 'screen')) return
-
     const slot = Number(msg.slot)
     if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) return
+    if (
+      !target ||
+      !canRelayScreen(room, client, target, slot, msg.type as 'offer' | 'answer' | 'ice')
+    ) {
+      return
+    }
 
     if (msg.type === 'ice') {
       wsSend(target.ws, {

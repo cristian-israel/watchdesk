@@ -19,27 +19,26 @@ import {
 import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
+import { MAX_SLOTS, ScreenShareSession, normalizeSlots } from '@/lib/screen-share'
 import { VoiceMesh } from '@/lib/voice-mesh'
 import {
-  peerKey,
   type PendingMember,
   type RosterMember,
   type SignalInbound,
   type SignalOutbound,
+  type SlotInfo,
   type VoicePeerState,
 } from '@/lib/signal'
-
-const MAX_SLOTS = 8
 
 type ShareEntry = {
   stream: MediaStream
   state: 'connecting' | 'live'
 }
 
-type PeerLink = {
-  pc: RTCPeerConnection
-  peerId: string
-  slot: number
+type RemoteTile = {
+  info: SlotInfo
+  video: HTMLVideoElement
+  tile: HTMLDivElement
 }
 
 export function HostPage() {
@@ -66,6 +65,8 @@ export function HostPage() {
   const [voicePeers, setVoicePeers] = useState<VoicePeerState[]>([])
   const [speakingIds, setSpeakingIds] = useState<string[]>([])
   const [selfPeerId, setSelfPeerId] = useState('')
+  const [screenAllowed, setScreenAllowed] = useState<Set<string>>(() => new Set())
+  const [localShareCount, setLocalShareCount] = useState(0)
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
@@ -73,11 +74,14 @@ export function HostPage() {
   panelRef.current = panel
   const rosterRef = useRef(roster)
   rosterRef.current = roster
+  const selfPeerIdRef = useRef('')
+  selfPeerIdRef.current = selfPeerId
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
-  const peersRef = useRef(new Map<string, PeerLink>())
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
+  const remoteGridRef = useRef<HTMLDivElement>(null)
+  const remoteTilesRef = useRef(new Map<number, RemoteTile>())
   const voiceRef = useRef<VoiceMesh | null>(null)
   if (!voiceRef.current) {
     voiceRef.current = new VoiceMesh({
@@ -92,6 +96,56 @@ export function HostPage() {
     })
   }
 
+  const screenRef = useRef<ScreenShareSession | null>(null)
+  if (!screenRef.current) {
+    screenRef.current = new ScreenShareSession({
+      send: (msg) => sendRef.current(msg),
+      iceServers: () => iceRef.current,
+      selfPeerId: () => selfPeerIdRef.current,
+      memberIds: () => [...viewersRef.current.keys()],
+      onRemoteStream: (info, stream) => ensureRemoteTile(info, stream),
+      onRemoteSlotRemoved: (slot) => removeRemoteTile(slot),
+    })
+  }
+
+  function ensureRemoteTile(info: SlotInfo, stream: MediaStream) {
+    const grid = remoteGridRef.current
+    if (!grid) return
+    let entry = remoteTilesRef.current.get(info.slot)
+    if (!entry) {
+      const tile = document.createElement('div')
+      tile.className =
+        'relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
+      tile.innerHTML =
+        '<video autoplay playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
+        '<span class="tag absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-xs text-white"></span>'
+      const video = tile.querySelector('video') as HTMLVideoElement
+      grid.appendChild(tile)
+      entry = { info, video, tile }
+      remoteTilesRef.current.set(info.slot, entry)
+    }
+    entry.info = info
+    const tag = entry.tile.querySelector('.tag') as HTMLElement
+    tag.textContent = info.displayName || `Tela ${info.slot + 1}`
+    entry.video.srcObject = stream
+    if (stream.getAudioTracks().length) entry.video.muted = false
+    else entry.video.muted = true
+    void entry.video.play().catch(() => {
+      /* autoplay */
+    })
+  }
+
+  function removeRemoteTile(slot: number) {
+    const entry = remoteTilesRef.current.get(slot)
+    if (!entry) return
+    remoteTilesRef.current.delete(slot)
+    entry.tile.remove()
+  }
+
+  function clearRemoteTiles() {
+    for (const slot of [...remoteTilesRef.current.keys()]) removeRemoteTile(slot)
+  }
+
   const { send } = useSignal(
     panel,
     (msg) => {
@@ -104,10 +158,11 @@ export function HostPage() {
   useEffect(() => {
     void boot()
     return () => {
-      ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
-      peersRef.current.forEach((p) => p.pc.close())
-      peersRef.current.clear()
+      screenRef.current?.teardown()
+      clearRemoteTiles()
       voiceRef.current?.teardown()
+      setShares(new Map())
+      setLocalShareCount(0)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
@@ -155,61 +210,6 @@ export function HostPage() {
     setBooting(false)
   }
 
-  function closePeer(key: string) {
-    const link = peersRef.current.get(key)
-    if (!link) return
-    peersRef.current.delete(key)
-    try {
-      link.pc.close()
-    } catch {
-      /* ok */
-    }
-  }
-
-  async function ensurePeer(peerId: string, slot: number, stream: MediaStream) {
-    const key = peerKey(peerId, slot)
-    if (peersRef.current.has(key)) return
-
-    const pc = new RTCPeerConnection({ iceServers: iceRef.current })
-    peersRef.current.set(key, { pc, peerId, slot })
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream))
-
-    pc.onicecandidate = (ev) => {
-      sendRef.current({
-        type: 'ice',
-        to: peerId,
-        slot,
-        candidate: ev.candidate ? ev.candidate.toJSON() : null,
-      })
-    }
-    pc.onconnectionstatechange = () => {
-      if (['failed', 'closed'].includes(pc.connectionState)) closePeer(key)
-    }
-
-    try {
-      const sender = pc.getSenders().find((s) => s.track?.kind === 'video')
-      if (sender) {
-        const p = sender.getParameters()
-        if (p.encodings?.[0]) {
-          p.encodings[0].maxBitrate = 4_000_000
-          await sender.setParameters(p)
-        }
-      }
-    } catch {
-      /* opcional */
-    }
-
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    sendRef.current({ type: 'offer', to: peerId, slot, sdp: offer.sdp || '' })
-  }
-
-  async function offerAllViewers(slot: number, stream: MediaStream) {
-    for (const peerId of viewersRef.current.keys()) {
-      await ensurePeer(peerId, slot, stream)
-    }
-  }
-
   async function onSignal(msg: SignalInbound) {
     if (msg.type === 'welcome') {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
@@ -218,9 +218,11 @@ export function HostPage() {
       setNewMax(msg.maxViewers)
       if (msg.joinMode) setJoinMode(msg.joinMode)
       setSelfPeerId(msg.peerId)
+      selfPeerIdRef.current = msg.peerId
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
+      setScreenAllowed(new Set(msg.screenAllowed || []))
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
       setPending(msg.pending || [])
       if (msg.voiceState) voiceRef.current?.applyVoiceState(msg.voiceState)
@@ -235,8 +237,10 @@ export function HostPage() {
       setRoster(welcomeMembers)
       syncVoiceMembers(welcomeMembers)
       await voiceRef.current?.setEnabled(ve)
-      for (const [slot, share] of sharesRef.current) {
-        await offerAllViewers(slot, share.stream)
+      const slots = normalizeSlots(msg.slots, msg.peerId, msg.displayName)
+      screenRef.current?.applySlots(slots)
+      for (const peerId of viewersRef.current.keys()) {
+        await screenRef.current?.onMemberJoined(peerId)
       }
       return
     }
@@ -249,13 +253,16 @@ export function HostPage() {
       setChatFeed((prev) =>
         appendSystem(prev, joinedLine(msg.displayName, 'viewer'), `join-${msg.peerId}`),
       )
-      for (const [slot, share] of sharesRef.current) {
-        await ensurePeer(msg.peerId, slot, share.stream)
-      }
+      await screenRef.current?.onMemberJoined(msg.peerId)
       return
     }
     if (msg.type === 'viewer_left') {
       viewersRef.current.delete(msg.peerId)
+      setScreenAllowed((prev) => {
+        const next = new Set(prev)
+        next.delete(msg.peerId)
+        return next
+      })
       setChatFeed((prev) =>
         appendSystem(
           prev,
@@ -263,17 +270,30 @@ export function HostPage() {
           `leave-${msg.peerId}`,
         ),
       )
-      for (const key of [...peersRef.current.keys()]) {
-        if (key.startsWith(`${msg.peerId}:`)) closePeer(key)
-      }
+      screenRef.current?.onMemberLeft(msg.peerId)
+      return
+    }
+    if (msg.type === 'slots') {
+      const slots = normalizeSlots(msg.slots)
+      screenRef.current?.applySlots(slots)
+      // Drop local share UI entries removed by server
+      setShares((prev) => {
+        const next = new Map(prev)
+        for (const slot of [...next.keys()]) {
+          const info = slots.find((s) => s.slot === slot)
+          if (!info || info.peerId !== selfPeerIdRef.current) next.delete(slot)
+        }
+        return next
+      })
+      setLocalShareCount(screenRef.current?.localSlotCount || 0)
+      return
+    }
+    if (msg.type === 'offer') {
+      await screenRef.current?.handleOffer(msg.from, msg.slot, msg.sdp)
       return
     }
     if (msg.type === 'answer') {
-      const link = peersRef.current.get(peerKey(msg.from, msg.slot))
-      if (!link) return
-      if (!link.pc.currentRemoteDescription) {
-        await link.pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp })
-      }
+      await screenRef.current?.handleAnswer(msg.from, msg.slot, msg.sdp)
       const share = sharesRef.current.get(msg.slot)
       if (share && share.state !== 'live') {
         setShares((prev) => new Map(prev).set(msg.slot, { ...share, state: 'live' }))
@@ -281,13 +301,11 @@ export function HostPage() {
       return
     }
     if (msg.type === 'ice') {
-      const link = peersRef.current.get(peerKey(msg.from, msg.slot))
-      if (!link || !msg.candidate) return
-      try {
-        await link.pc.addIceCandidate(msg.candidate)
-      } catch {
-        /* race */
-      }
+      await screenRef.current?.handleIce(msg.from, msg.slot, msg.candidate)
+      return
+    }
+    if (msg.type === 'screen_allowed') {
+      setScreenAllowed(new Set(msg.peerIds))
       return
     }
     if (msg.type === 'voice_offer') {
@@ -319,9 +337,8 @@ export function HostPage() {
       const next = new Map(
         msg.members.filter((m) => m.role === 'viewer').map((m) => [m.peerId, m.displayName]),
       )
-      for (const key of [...peersRef.current.keys()]) {
-        const peerId = key.split(':')[0]
-        if (!next.has(peerId)) closePeer(key)
+      for (const peerId of [...viewersRef.current.keys()]) {
+        if (!next.has(peerId)) screenRef.current?.onMemberLeft(peerId)
       }
       viewersRef.current = next
       syncVoiceMembers(msg.members)
@@ -360,47 +377,33 @@ export function HostPage() {
         video: { frameRate: 30 },
         audio: true,
       })
-      await publish(stream)
+      const slot = await screenRef.current!.publish(stream)
+      setShares((prev) => new Map(prev).set(slot, { stream, state: 'live' }))
+      setLocalShareCount(screenRef.current?.localSlotCount || 0)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') return
       action.fail(err instanceof Error ? err.message : 'Falha ao compartilhar.')
     }
   }
 
-  async function publish(stream: MediaStream) {
-    const [track] = stream.getVideoTracks()
-    if ('contentHint' in track) track.contentHint = 'detail'
-
-    for (let slot = 0; slot < MAX_SLOTS; slot++) {
-      if (sharesRef.current.has(slot)) continue
-      const entry: ShareEntry = { stream, state: 'live' }
-      setShares((prev) => new Map(prev).set(slot, entry))
-      sendRef.current({ type: 'slot_add', slot })
-      track.addEventListener('ended', () => stopSlot(slot))
-      await offerAllViewers(slot, stream)
-      return
-    }
-    stream.getTracks().forEach((t) => t.stop())
-    throw new Error('Limite de telas atingido.')
-  }
-
-  function stopSlot(slot: number, notify = true) {
-    const e = sharesRef.current.get(slot)
-    if (!e) return
+  function stopSlot(slot: number) {
+    screenRef.current?.stopSlot(slot, true)
     setShares((prev) => {
       const next = new Map(prev)
       next.delete(slot)
       return next
     })
-    if (notify) sendRef.current({ type: 'slot_remove', slot })
-    for (const key of [...peersRef.current.keys()]) {
-      if (key.endsWith(`:${slot}`)) closePeer(key)
-    }
-    e.stream.getTracks().forEach((t) => t.stop())
+    setLocalShareCount(screenRef.current?.localSlotCount || 0)
+  }
+
+  function setViewerScreenAllow(peerId: string, allow: boolean) {
+    sendRef.current({ type: 'screen_allow', peerId, allow })
   }
 
   async function logout() {
-    ;[...sharesRef.current.keys()].forEach((slot) => stopSlot(slot, false))
+    screenRef.current?.teardown()
+    clearRemoteTiles()
+    setShares(new Map())
     voiceRef.current?.teardown()
     await api('/api/logout', { method: 'POST' })
     setPanel(false)
@@ -456,8 +459,12 @@ export function HostPage() {
   async function kickAllViewers() {
     await action.run({ pending: 'Removendo…', success: 'Espectadores removidos' }, async () => {
       await apiOrThrow(`/api/rooms/${encodeURIComponent(room)}/kick-viewers`, { method: 'POST' })
-      for (const key of [...peersRef.current.keys()]) closePeer(key)
+      for (const peerId of [...viewersRef.current.keys()]) {
+        screenRef.current?.onMemberLeft(peerId)
+      }
       viewersRef.current.clear()
+      setScreenAllowed(new Set())
+      clearRemoteTiles()
       setRoster((prev) => prev.filter((m) => m.role !== 'viewer'))
       setPending([])
     })
@@ -538,16 +545,20 @@ export function HostPage() {
             </div>
           </section>
 
-          <Button type="button" disabled={shares.size >= MAX_SLOTS} onClick={() => void shareScreen()}>
+          <Button
+            type="button"
+            disabled={shares.size + remoteTilesRef.current.size >= MAX_SLOTS}
+            onClick={() => void shareScreen()}
+          >
             Compartilhar uma tela
           </Button>
 
           <section>
             <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              No ar
+              Suas telas
             </h2>
             {!sorted.length ? (
-              <p className="text-sm text-muted-foreground">Nada sendo compartilhado.</p>
+              <p className="text-sm text-muted-foreground">Nada sendo compartilhado por você.</p>
             ) : (
               <ul className="flex flex-col gap-2">
                 {sorted.map(([slot, e]) => (
@@ -566,6 +577,20 @@ export function HostPage() {
                 ))}
               </ul>
             )}
+          </section>
+
+          <section>
+            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Telas da sala
+            </h2>
+            <div
+              ref={remoteGridRef}
+              className="grid min-h-16 content-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))]"
+            />
+            <p className="text-sm text-muted-foreground">
+              Telas de espectadores liberados aparecem aqui.
+              {localShareCount ? ` · você com ${localShareCount} no ar` : ''}
+            </p>
           </section>
 
           {joinMode === 'ask' ? (
@@ -634,16 +659,28 @@ export function HostPage() {
                             </span>
                           ) : null}
                         </span>
-                        {voiceEnabled ? (
+                        <div className="flex flex-wrap gap-2">
+                          {voiceEnabled ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
+                            >
+                              {vs?.forceMuted ? 'Liberar mic' : 'Mutar'}
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
+                            onClick={() =>
+                              setViewerScreenAllow(v.peerId, !screenAllowed.has(v.peerId))
+                            }
                           >
-                            {vs?.forceMuted ? 'Liberar mic' : 'Mutar'}
+                            {screenAllowed.has(v.peerId) ? 'Revogar tela' : 'Permitir tela'}
                           </Button>
-                        ) : null}
+                        </div>
                       </li>
                     )
                   })}

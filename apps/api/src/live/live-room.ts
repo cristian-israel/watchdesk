@@ -28,6 +28,12 @@ export type VoicePeerState = {
   forceMuted: boolean
 }
 
+export type SlotInfo = {
+  slot: number
+  peerId: string
+  displayName: string
+}
+
 export type RuntimeRoom = {
   slug: string
   roomDbId: number
@@ -36,7 +42,10 @@ export type RuntimeRoom = {
   joinMode: JoinMode
   voiceEnabled: boolean
   host: LiveClient | null
-  slots: Set<number>
+  /** slot → publisher peerId */
+  slotOwners: Map<number, string>
+  /** viewers allowed to publish screen */
+  screenAllowed: Set<string>
   viewers: Map<string, LiveClient>
   pending: Map<string, LiveClient>
   admittedDevices: Set<string>
@@ -64,7 +73,8 @@ export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): Runtim
       joinMode,
       voiceEnabled,
       host: null,
-      slots: new Set(),
+      slotOwners: new Map(),
+      screenAllowed: new Set(),
       viewers: new Map(),
       pending: new Map(),
       admittedDevices: new Set(),
@@ -86,8 +96,86 @@ export function wsSend(ws: LiveWs | null | undefined, msg: unknown) {
   }
 }
 
-export function slotList(room: RuntimeRoom) {
-  return [...room.slots].sort((a, b) => a - b)
+export function slotList(room: RuntimeRoom): SlotInfo[] {
+  const list: SlotInfo[] = []
+  for (const [slot, peerId] of room.slotOwners) {
+    const client = findClient(room, peerId)
+    list.push({
+      slot,
+      peerId,
+      displayName: client?.displayName || peerId,
+    })
+  }
+  return list.sort((a, b) => a.slot - b.slot)
+}
+
+export function canPublishScreen(room: RuntimeRoom, client: LiveClient) {
+  if (client.role === 'host') return true
+  if (client.role === 'viewer') return room.screenAllowed.has(client.peerId)
+  return false
+}
+
+export function claimSlot(room: RuntimeRoom, slot: number, client: LiveClient) {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) {
+    return { ok: false as const, message: 'Slot inválido.' }
+  }
+  if (!canPublishScreen(room, client)) {
+    return { ok: false as const, message: 'Sem permissão para compartilhar tela.' }
+  }
+  const owner = room.slotOwners.get(slot)
+  if (owner && owner !== client.peerId) {
+    return { ok: false as const, message: 'Slot ocupado.' }
+  }
+  room.slotOwners.set(slot, client.peerId)
+  return { ok: true as const }
+}
+
+export function releaseSlot(room: RuntimeRoom, slot: number, client: LiveClient) {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_SLOTS) {
+    return { ok: false as const, message: 'Slot inválido.' }
+  }
+  const owner = room.slotOwners.get(slot)
+  if (!owner) return { ok: true as const }
+  if (owner !== client.peerId && client.role !== 'host') {
+    return { ok: false as const, message: 'Só o dono ou o host pode liberar o slot.' }
+  }
+  room.slotOwners.delete(slot)
+  return { ok: true as const }
+}
+
+export function releaseSlotsOf(room: RuntimeRoom, peerId: string) {
+  for (const [slot, owner] of [...room.slotOwners]) {
+    if (owner === peerId) room.slotOwners.delete(slot)
+  }
+}
+
+export function setScreenAllow(room: RuntimeRoom, peerId: string, allow: boolean) {
+  const target = findClient(room, peerId)
+  if (!target || target.role !== 'viewer') {
+    return { ok: false as const, message: 'Espectador não encontrado.' }
+  }
+  if (allow) room.screenAllowed.add(peerId)
+  else {
+    room.screenAllowed.delete(peerId)
+    releaseSlotsOf(room, peerId)
+  }
+  return { ok: true as const, target }
+}
+
+/** Screen: offer only from slot owner to another admitted; answer/ice either way on that pair. */
+export function canRelayScreen(
+  room: RuntimeRoom,
+  from: LiveClient,
+  to: LiveClient,
+  slot: number,
+  msgType: 'offer' | 'answer' | 'ice',
+) {
+  if (!isAdmittedRole(from.role) || !isAdmittedRole(to.role)) return false
+  if (from.peerId === to.peerId) return false
+  const owner = room.slotOwners.get(slot)
+  if (owner === undefined) return false
+  if (msgType === 'offer') return from.peerId === owner
+  return from.peerId === owner || to.peerId === owner
 }
 
 export function roster(room: RuntimeRoom) {
@@ -154,22 +242,19 @@ export function isAdmittedRole(role: ClientRole) {
   return role === 'host' || role === 'viewer'
 }
 
-/** Screen share: host↔viewer only. Voice mesh: any admitted pair. */
+/** Voice mesh: any admitted pair when voice is on. */
 export function canRelaySignal(
   room: RuntimeRoom,
   from: LiveClient,
   to: LiveClient,
-  channel: 'screen' | 'voice',
+  channel: 'voice',
 ) {
   if (!isAdmittedRole(from.role) || !isAdmittedRole(to.role)) return false
   if (channel === 'voice') {
     if (!room.voiceEnabled) return false
     return from.peerId !== to.peerId
   }
-  return (
-    (from.role === 'host' && to.role === 'viewer') ||
-    (from.role === 'viewer' && to.role === 'host')
-  )
+  return false
 }
 
 export function applySelfMute(client: LiveClient, muted: boolean) {
@@ -189,10 +274,8 @@ export function applyHostMute(room: RuntimeRoom, targetPeerId: string, muted: bo
 }
 
 function clearMediaSlots(room: RuntimeRoom) {
-  room.slots.clear()
-  for (const v of room.viewers.values()) {
-    wsSend(v.ws, { type: 'slots', slots: [] })
-  }
+  room.slotOwners.clear()
+  broadcastRoom(room, { type: 'slots', slots: [] })
 }
 
 export function resolveHostJoin(
@@ -267,7 +350,8 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
 
   if (client.role === 'host' && room.host && room.host.peerId === client.peerId) {
     room.host = null
-    room.slots.clear()
+    room.slotOwners.clear()
+    room.screenAllowed.clear()
     for (const v of room.viewers.values()) {
       wsSend(v.ws, { type: 'host_left' })
     }
@@ -275,6 +359,7 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
       wsSend(p.ws, { type: 'host_left' })
     }
     broadcastRoom(room, { type: 'roster', members: roster(room) })
+    broadcastRoom(room, { type: 'slots', slots: [] })
     if (room.voiceEnabled) {
       broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
     }
@@ -291,12 +376,15 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
 
   if (client.role === 'viewer' && room.viewers.has(client.peerId)) {
     room.viewers.delete(client.peerId)
+    room.screenAllowed.delete(client.peerId)
+    releaseSlotsOf(room, client.peerId)
     broadcastRoom(room, {
       type: 'viewer_left',
       peerId: client.peerId,
       displayName: client.displayName,
     })
     broadcastRoom(room, { type: 'roster', members: roster(room) })
+    broadcastRoom(room, { type: 'slots', slots: slotList(room) })
     if (room.voiceEnabled) {
       broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
     }
@@ -308,6 +396,10 @@ export function kickRole(room: RuntimeRoom, role: string, reason: string) {
   const list = [...room.viewers.values()]
   room.viewers.clear()
   room.admittedDevices.clear()
+  room.screenAllowed.clear()
+  for (const [slot, owner] of [...room.slotOwners]) {
+    if (!room.host || owner !== room.host.peerId) room.slotOwners.delete(slot)
+  }
   for (const v of list) {
     broadcastRoom(room, {
       type: 'viewer_left',
@@ -335,6 +427,7 @@ export function kickRole(room: RuntimeRoom, role: string, reason: string) {
   if (room.host) {
     wsSend(room.host.ws, { type: 'roster', members: roster(room) })
     wsSend(room.host.ws, { type: 'pending', pending: [] })
+    wsSend(room.host.ws, { type: 'slots', slots: slotList(room) })
   }
 }
 
@@ -347,7 +440,8 @@ export function createTestRoom(slug = 'test'): RuntimeRoom {
     joinMode: 'ask',
     voiceEnabled: false,
     host: null,
-    slots: new Set(),
+    slotOwners: new Map(),
+    screenAllowed: new Set(),
     viewers: new Map(),
     pending: new Map(),
     admittedDevices: new Set(),

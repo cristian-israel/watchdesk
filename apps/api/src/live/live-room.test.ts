@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import {
   applyHostMute,
   applySelfMute,
+  canPublishScreen,
+  canRelayScreen,
   canRelaySignal,
+  claimSlot,
   createTestRoom,
   denyPending,
   detachClient,
@@ -13,6 +16,8 @@ import {
   resetVoiceMutes,
   resolveHostJoin,
   roster,
+  setScreenAllow,
+  slotList,
   testClient,
   voiceState,
 } from './live-room'
@@ -28,7 +33,7 @@ describe('live-room resolveHostJoin', () => {
       roomSlug: 'test',
       displayName: 'Host1',
     })
-    room.slots.add(0)
+    room.slotOwners.set(0, 'h1')
 
     const result = resolveHostJoin(room, {
       sessionRole: 'host',
@@ -37,7 +42,7 @@ describe('live-room resolveHostJoin', () => {
 
     assert.equal(result.kicked, true)
     assert.equal(room.host, null)
-    assert.equal(room.slots.size, 0)
+    assert.equal(room.slotOwners.size, 0)
     assert.equal((prevWs.msgs[0] as { type?: string })?.type, 'error')
     assert.equal(prevWs.readyState, 3)
   })
@@ -158,7 +163,7 @@ describe('live-room detachClient', () => {
       displayName: 'Host',
     })
     room.host = host
-    room.slots.add(0)
+    room.slotOwners.set(0, 'h1')
     room.viewers.set(
       'v1',
       testClient({
@@ -173,7 +178,7 @@ describe('live-room detachClient', () => {
     detachClient(live, host)
 
     assert.equal(room.host, null)
-    assert.equal(room.slots.size, 0)
+    assert.equal(room.slotOwners.size, 0)
     assert.equal(viewerWs.msgs.some((m) => (m as { type?: string }).type === 'host_left'), true)
   })
 })
@@ -199,26 +204,6 @@ describe('live-room voice relay', () => {
     assert.equal(canRelaySignal(room, a, b, 'voice'), true)
   })
 
-  it('blocks viewer↔viewer screen share', () => {
-    const room = createTestRoom()
-    room.voiceEnabled = true
-    const a = testClient({
-      ws: mockWs(),
-      peerId: 'v1',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'A',
-    })
-    const b = testClient({
-      ws: mockWs(),
-      peerId: 'v2',
-      role: 'viewer',
-      roomSlug: 'test',
-      displayName: 'B',
-    })
-    assert.equal(canRelaySignal(room, a, b, 'screen'), false)
-  })
-
   it('blocks voice relay when voice is disabled', () => {
     const room = createTestRoom()
     room.voiceEnabled = false
@@ -237,7 +222,81 @@ describe('live-room voice relay', () => {
       displayName: 'V',
     })
     assert.equal(canRelaySignal(room, host, viewer, 'voice'), false)
-    assert.equal(canRelaySignal(room, host, viewer, 'screen'), true)
+  })
+})
+
+describe('live-room viewer screen share', () => {
+  it('viewer cannot publish without allow', () => {
+    const room = createTestRoom()
+    const viewer = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+    })
+    room.viewers.set('v1', viewer)
+    assert.equal(canPublishScreen(room, viewer), false)
+    assert.equal(claimSlot(room, 0, viewer).ok, false)
+  })
+
+  it('viewer can claim slot after host allows', () => {
+    const room = createTestRoom()
+    room.host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+    })
+    const viewer = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+    })
+    room.viewers.set('v1', viewer)
+    assert.equal(setScreenAllow(room, 'v1', true).ok, true)
+    assert.equal(canPublishScreen(room, viewer), true)
+    assert.equal(claimSlot(room, 0, viewer).ok, true)
+    assert.deepEqual(slotList(room), [{ slot: 0, peerId: 'v1', displayName: 'V' }])
+  })
+
+  it('revoke releases slots and blocks offer', () => {
+    const room = createTestRoom()
+    const host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+    })
+    const viewer = testClient({
+      ws: mockWs(),
+      peerId: 'v1',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'V',
+    })
+    const other = testClient({
+      ws: mockWs(),
+      peerId: 'v2',
+      role: 'viewer',
+      roomSlug: 'test',
+      displayName: 'O',
+    })
+    room.host = host
+    room.viewers.set('v1', viewer)
+    room.viewers.set('v2', other)
+    setScreenAllow(room, 'v1', true)
+    claimSlot(room, 0, viewer)
+    assert.equal(canRelayScreen(room, viewer, other, 0, 'offer'), true)
+    assert.equal(canRelayScreen(room, other, viewer, 0, 'answer'), true)
+    setScreenAllow(room, 'v1', false)
+    assert.equal(room.slotOwners.size, 0)
+    assert.equal(canPublishScreen(room, viewer), false)
+    assert.equal(canRelayScreen(room, viewer, other, 0, 'offer'), false)
   })
 })
 

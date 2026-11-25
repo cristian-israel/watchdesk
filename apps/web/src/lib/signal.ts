@@ -26,6 +26,12 @@ export type VoicePeerState = {
   forceMuted: boolean
 }
 
+export type SlotInfo = {
+  slot: number
+  peerId: string
+  displayName: string
+}
+
 export type SignalInbound =
   | {
       type: 'welcome'
@@ -33,7 +39,7 @@ export type SignalInbound =
       role: 'host' | 'viewer'
       room: string
       displayName: string
-      slots: number[]
+      slots: SlotInfo[] | number[]
       viewers?: { peerId: string; displayName: string }[]
       pending?: PendingMember[]
       iceServers: RTCIceServer[]
@@ -42,6 +48,8 @@ export type SignalInbound =
       joinMode?: JoinMode
       voiceEnabled?: boolean
       voiceState?: VoicePeerState[]
+      screenAllowed?: string[]
+      canShareScreen?: boolean
       admitStatus?: 'pending' | 'admitted'
     }
   | { type: 'error'; message: string }
@@ -49,7 +57,7 @@ export type SignalInbound =
   | { type: 'viewer_left'; peerId: string; displayName?: string }
   | { type: 'host_joined'; peerId: string; displayName: string }
   | { type: 'host_left' }
-  | { type: 'slots'; slots: number[] }
+  | { type: 'slots'; slots: SlotInfo[] | number[] }
   | { type: 'offer'; from: string; slot: number; sdp: string }
   | { type: 'answer'; from: string; slot: number; sdp: string }
   | { type: 'ice'; from: string; slot: number; candidate: RTCIceCandidateInit | null }
@@ -57,6 +65,8 @@ export type SignalInbound =
   | { type: 'voice_answer'; from: string; sdp: string }
   | { type: 'voice_ice'; from: string; candidate: RTCIceCandidateInit | null }
   | { type: 'voice_state'; peers: VoicePeerState[] }
+  | { type: 'screen_allow'; allow: boolean; canShareScreen: boolean }
+  | { type: 'screen_allowed'; peerIds: string[] }
   | { type: 'chat'; message: ChatMessage }
   | { type: 'chat_history'; messages: ChatMessage[] }
   | { type: 'roster'; members: RosterMember[] }
@@ -69,7 +79,7 @@ export type SignalInbound =
       voiceEnabled?: boolean
     }
   | { type: 'admit_request'; peerId: string; displayName: string }
-  | { type: 'admit_result'; accepted: boolean; message?: string; slots?: number[] }
+  | { type: 'admit_result'; accepted: boolean; message?: string; slots?: SlotInfo[] | number[] }
   | { type: 'pending'; pending: PendingMember[] }
 
 export type SignalOutbound =
@@ -84,6 +94,7 @@ export type SignalOutbound =
   | { type: 'voice_ice'; to: string; candidate: RTCIceCandidateInit | null }
   | { type: 'self_mute'; muted: boolean }
   | { type: 'voice_mute'; peerId: string; muted: boolean }
+  | { type: 'screen_allow'; peerId: string; allow: boolean }
   | { type: 'chat'; body: string }
   | { type: 'admit'; peerId: string; accept: boolean }
 
