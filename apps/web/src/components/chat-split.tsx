@@ -132,8 +132,8 @@ export function ChatSplit({ children, chat }: Props) {
         id="chat"
         panelRef={chatPanelRef}
         collapsible
-        collapsedSize="0%"
-        collapsedThreshold="8%"
+        collapsedSize={44}
+        collapsedThreshold={24}
         minSize="18%"
         maxSize="55%"
         defaultSize={`${initial.current.size}`}

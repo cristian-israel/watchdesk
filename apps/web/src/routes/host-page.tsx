@@ -4,7 +4,6 @@ import {
   Copy,
   Link2,
   LogOut,
-  MessageSquare,
   Mic,
   MicOff,
   MonitorUp,
@@ -15,6 +14,7 @@ import {
   Settings2,
   Users,
 } from 'lucide-react'
+import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
@@ -119,7 +119,9 @@ export function HostPage() {
   const [remoteShareCount, setRemoteShareCount] = useState(0)
   const [linkCopied, setLinkCopied] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [chatOpen, setChatOpen] = useState(true)
+  const [chatMinimized, setChatMinimized] = useState(false)
+  const chatPanelRef = usePanelRef()
+  const chatPersistTimer = useRef<number | undefined>(undefined)
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
@@ -608,16 +610,6 @@ export function HostPage() {
             <Settings2 className="size-3.5" />
             Sala
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="gap-1.5 sm:hidden"
-            onClick={() => setChatOpen((v) => !v)}
-          >
-            <MessageSquare className="size-3.5" />
-            Chat
-          </Button>
           <Button type="button" variant="ghost" size="sm" onClick={() => void logout()}>
             <LogOut className="size-3.5" />
           </Button>
@@ -709,12 +701,12 @@ export function HostPage() {
         </div>
       ) : null}
 
-      {/* IDE-style: Stage | People | Chat */}
+      {/* IDE: Stage | People | Chat — painéis sempre montados; resize sem setState no drag */}
       <div className="min-h-0 flex-1">
-        <ResizablePanelGroup orientation="horizontal" className="h-full">
-          <ResizablePanel id="host-stage" defaultSize="52%" minSize="30%" className="min-h-0">
+        <ResizablePanelGroup orientation="horizontal" className="h-full min-h-0">
+          <ResizablePanel id="host-stage" defaultSize="55%" minSize="28%" className="min-h-0">
             <div className="flex h-full min-h-0 flex-col">
-              <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-muted/20 px-3 py-2">
                 <Button
                   type="button"
                   size="sm"
@@ -809,16 +801,16 @@ export function HostPage() {
             </div>
           </ResizablePanel>
 
-          <ResizableHandle withHandle className="hidden sm:flex" />
+          <ResizableHandle withHandle />
 
           <ResizablePanel
             id="host-people"
-            defaultSize="22%"
-            minSize="16%"
-            maxSize="40%"
-            className="min-h-0 hidden sm:block"
+            defaultSize="20%"
+            minSize="14%"
+            maxSize="36%"
+            className="min-h-0"
           >
-            <aside className="flex h-full min-h-0 flex-col bg-card">
+            <aside className="flex h-full min-h-0 flex-col border-l border-border bg-card">
               <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
                 <div className="flex items-center gap-2">
                   <Users className="size-3.5 text-muted-foreground" />
@@ -995,63 +987,73 @@ export function HostPage() {
             </aside>
           </ResizablePanel>
 
-          <ResizableHandle withHandle className={cn(!chatOpen && 'hidden', 'hidden sm:flex')} />
+          <ResizableHandle withHandle />
 
           <ResizablePanel
             id="host-chat"
-            defaultSize="26%"
-            minSize="18%"
-            maxSize="45%"
+            panelRef={chatPanelRef}
+            defaultSize="25%"
+            minSize="16%"
+            maxSize="42%"
             collapsible
-            collapsedSize="0%"
-            collapsedThreshold="10%"
-            className={cn('min-h-0', !chatOpen && 'hidden sm:flex')}
-            onResize={(size) => {
-              if (size.asPercentage < 2) setChatOpen(false)
-              else setChatOpen(true)
+            collapsedSize={44}
+            collapsedThreshold={24}
+            className="min-h-0"
+            onResize={() => {
+              const collapsed = chatPanelRef.current?.isCollapsed() ?? false
+              if (chatPersistTimer.current) window.clearTimeout(chatPersistTimer.current)
+              chatPersistTimer.current = window.setTimeout(() => {
+                setChatMinimized(collapsed)
+              }, 100)
             }}
           >
-            <div className="flex h-full min-h-0 flex-col border-l border-border bg-card/50">
-              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-                <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                  Mensagens
-                </span>
+            {chatMinimized ? (
+              <div className="flex h-full flex-col items-center border-l border-border bg-card py-2">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="size-7"
-                  aria-label="Minimizar chat"
-                  onClick={() => setChatOpen(false)}
+                  className="size-8"
+                  aria-label="Abrir chat"
+                  onClick={() => {
+                    setChatMinimized(false)
+                    chatPanelRef.current?.expand()
+                  }}
                 >
-                  <PanelRightClose className="size-3.5" />
+                  <PanelRightOpen className="size-4" />
                 </Button>
               </div>
-              <div className="min-h-0 flex-1">
-                <RoomChat
-                  items={chatFeed}
-                  selfName={hostName}
-                  selfDeviceId={deviceId}
-                  onSend={(body) => sendRef.current({ type: 'chat', body })}
-                />
+            ) : (
+              <div className="flex h-full min-h-0 flex-col border-l border-border bg-card/50">
+                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+                  <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                    Mensagens
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    aria-label="Minimizar chat"
+                    onClick={() => {
+                      setChatMinimized(true)
+                      chatPanelRef.current?.collapse()
+                    }}
+                  >
+                    <PanelRightClose className="size-3.5" />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <RoomChat
+                    items={chatFeed}
+                    selfName={hostName}
+                    selfDeviceId={deviceId}
+                    onSend={(body) => sendRef.current({ type: 'chat', body })}
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </ResizablePanel>
-
-          {!chatOpen ? (
-            <div className="hidden w-10 shrink-0 flex-col items-center border-l border-border bg-card py-2 sm:flex">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                aria-label="Abrir chat"
-                onClick={() => setChatOpen(true)}
-              >
-                <PanelRightOpen className="size-4" />
-              </Button>
-            </div>
-          ) : null}
         </ResizablePanelGroup>
       </div>
     </div>
