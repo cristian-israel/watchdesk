@@ -19,13 +19,38 @@ import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
 import { VoiceMesh } from '@/lib/voice-mesh'
-import { peerKey, type SignalInbound, type SignalOutbound } from '@/lib/signal'
+import { peerKey, type RosterMember, type SignalInbound, type SignalOutbound } from '@/lib/signal'
 
 type TileEntry = {
   name: string
   video: HTMLVideoElement
   stateEl: HTMLElement
   tile: HTMLDivElement
+}
+
+function SpeakingHint({
+  speakingIds,
+  selfPeerId,
+  selfMuted,
+  roster,
+}: {
+  speakingIds: string[]
+  selfPeerId: string
+  selfMuted: boolean
+  roster: RosterMember[]
+}) {
+  const parts: string[] = []
+  if (speakingIds.includes(selfPeerId) && !selfMuted) parts.push('Você')
+  for (const id of speakingIds) {
+    if (id === selfPeerId) continue
+    const name = roster.find((m) => m.peerId === id)?.displayName
+    if (name) parts.push(name)
+    if (parts.length >= 4) break
+  }
+  if (!parts.length) return null
+  return (
+    <p className="truncate text-xs text-muted-foreground">{parts.join(', ')} falando</p>
+  )
 }
 
 export function SalaPage() {
@@ -44,6 +69,9 @@ export function SalaPage() {
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(true)
   const [voiceForceMuted, setVoiceForceMuted] = useState(false)
+  const [speakingIds, setSpeakingIds] = useState<string[]>([])
+  const [selfPeerId, setSelfPeerId] = useState('')
+  const [roster, setRoster] = useState<RosterMember[]>([])
   const watching = active && !admitPending
   useImmersive(watching)
 
@@ -65,7 +93,21 @@ export function SalaPage() {
         setVoiceMuted(muted)
         setVoiceForceMuted(forceMuted)
       },
+      onSpeakingChange: (ids) => setSpeakingIds(ids),
     })
+  }
+
+  function resumeMediaPlayback() {
+    voiceRef.current?.resumePlayback()
+    for (const { video } of tilesRef.current.values()) {
+      const stream = video.srcObject
+      if (stream instanceof MediaStream && stream.getAudioTracks().length) {
+        video.muted = false
+      }
+      void video.play().catch(() => {
+        /* autoplay */
+      })
+    }
   }
 
   const { send } = useSignal(
@@ -239,8 +281,11 @@ export function SalaPage() {
     pc.ontrack = (e) => {
       const stream = e.streams[0] || new MediaStream([e.track])
       tile.video.srcObject = stream
+      if (stream.getAudioTracks().length) {
+        tile.video.muted = false
+      }
       void tile.video.play().catch(() => {
-        /* autoplay */
+        /* autoplay — retry on next user gesture via resumeMediaPlayback */
       })
     }
     pc.onicecandidate = (ev) => {
@@ -276,6 +321,7 @@ export function SalaPage() {
     if (msg.type === 'welcome') {
       iceRef.current = msg.iceServers?.length ? msg.iceServers : iceRef.current
       setRoomActive(msg.active)
+      setSelfPeerId(msg.peerId)
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
@@ -354,6 +400,7 @@ export function SalaPage() {
       return
     }
     if (msg.type === 'roster') {
+      setRoster(msg.members)
       voiceRef.current?.setMembers(msg.members.map((m) => m.peerId))
       return
     }
@@ -421,6 +468,9 @@ export function SalaPage() {
     gridRef.current?.replaceChildren()
     voiceRef.current?.teardown()
     setChatFeed([])
+    setRoster([])
+    setSpeakingIds([])
+    setSelfPeerId('')
     setVoiceEnabled(false)
     setWaiting(true)
   }
@@ -428,6 +478,7 @@ export function SalaPage() {
   async function toggleSelfMute() {
     try {
       await voiceRef.current?.setMuted(!voiceMuted)
+      resumeMediaPlayback()
     } catch (err) {
       action.fail(err instanceof Error ? err.message : 'Falha no microfone.')
     }
@@ -516,9 +567,22 @@ export function SalaPage() {
         />
       }
     >
-      <div className="flex h-full min-h-0 flex-col">
+      <div
+        className="flex h-full min-h-0 flex-col"
+        onPointerDownCapture={() => resumeMediaPlayback()}
+      >
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
-          <b className="font-medium">Sala {room}</b>
+          <div className="min-w-0">
+            <b className="font-medium">Sala {room}</b>
+            {voiceEnabled ? (
+              <SpeakingHint
+                speakingIds={speakingIds}
+                selfPeerId={selfPeerId}
+                selfMuted={voiceMuted}
+                roster={roster}
+              />
+            ) : null}
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             {voiceEnabled ? (
               <>
@@ -533,6 +597,8 @@ export function SalaPage() {
                 </Button>
                 {voiceForceMuted ? (
                   <span className="text-xs text-muted-foreground">Mic bloqueado pelo host</span>
+                ) : speakingIds.includes(selfPeerId) && !voiceMuted ? (
+                  <span className="text-xs text-muted-foreground">Falando…</span>
                 ) : null}
               </>
             ) : null}

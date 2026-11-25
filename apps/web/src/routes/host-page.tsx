@@ -64,6 +64,8 @@ export function HostPage() {
   const [voiceMuted, setVoiceMuted] = useState(true)
   const [voiceForceMuted, setVoiceForceMuted] = useState(false)
   const [voicePeers, setVoicePeers] = useState<VoicePeerState[]>([])
+  const [speakingIds, setSpeakingIds] = useState<string[]>([])
+  const [selfPeerId, setSelfPeerId] = useState('')
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
@@ -86,6 +88,7 @@ export function HostPage() {
         setVoiceForceMuted(forceMuted)
       },
       onPeersChange: (peers) => setVoicePeers(peers),
+      onSpeakingChange: (ids) => setSpeakingIds(ids),
     })
   }
 
@@ -214,6 +217,7 @@ export function HostPage() {
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
       if (msg.joinMode) setJoinMode(msg.joinMode)
+      setSelfPeerId(msg.peerId)
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
@@ -354,7 +358,7 @@ export function HostPage() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 30 },
-        audio: false,
+        audio: true,
       })
       await publish(stream)
     } catch (err) {
@@ -434,6 +438,7 @@ export function HostPage() {
   async function toggleSelfMute() {
     try {
       await voiceRef.current?.setMuted(!voiceMuted)
+      voiceRef.current?.resumePlayback()
     } catch (err) {
       action.fail(err instanceof Error ? err.message : 'Falha no microfone.')
     }
@@ -609,6 +614,7 @@ export function HostPage() {
                 <ul className="flex flex-col gap-2 text-sm">
                   {viewers.map((v) => {
                     const vs = voicePeers.find((p) => p.peerId === v.peerId)
+                    const talking = speakingIds.includes(v.peerId)
                     return (
                       <li
                         key={v.peerId}
@@ -622,7 +628,9 @@ export function HostPage() {
                                 ? 'mutado pelo host'
                                 : vs?.muted
                                   ? 'mudo'
-                                  : 'falando'}
+                                  : talking
+                                    ? 'falando'
+                                    : 'mic ligado'}
                             </span>
                           ) : null}
                         </span>
@@ -666,7 +674,11 @@ export function HostPage() {
                   <span className="text-sm text-muted-foreground">Mic bloqueado</span>
                 ) : (
                   <span className="text-sm text-muted-foreground">
-                    {voiceMuted ? 'Você está mudo' : 'Mic ligado'}
+                    {voiceMuted
+                      ? 'Você está mudo'
+                      : speakingIds.includes(selfPeerId)
+                        ? 'Falando…'
+                        : 'Mic ligado'}
                   </span>
                 )}
               </div>

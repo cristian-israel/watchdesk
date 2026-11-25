@@ -1,4 +1,5 @@
 import type { SignalOutbound, VoicePeerState } from '@/lib/signal'
+import { isSpeaking, rmsFromTimeDomain } from '@/lib/speaking'
 
 export type VoiceMeshSend = (msg: SignalOutbound) => void
 
@@ -7,7 +8,26 @@ export type VoiceMeshOptions = {
   iceServers: () => RTCIceServer[]
   onLocalMuteChange?: (muted: boolean, forceMuted: boolean) => void
   onPeersChange?: (peers: VoicePeerState[]) => void
+  onSpeakingChange?: (speakingPeerIds: string[]) => void
 }
+
+type PeerLink = {
+  pc: RTCPeerConnection
+  audio: HTMLAudioElement
+  analyser: AnalyserNode | null
+  source: MediaStreamAudioSourceNode | null
+  lastSpokeAt: number
+  speaking: boolean
+}
+
+type LocalAnalyser = {
+  analyser: AnalyserNode
+  source: MediaStreamAudioSourceNode
+  lastSpokeAt: number
+  speaking: boolean
+}
+
+const POLL_MS = 80
 
 /**
  * Mesh P2P de áudio. O peer com peerId lexicograficamente menor cria o offer.
@@ -18,12 +38,14 @@ export class VoiceMesh {
   private localStream: MediaStream | null = null
   private muted = true
   private forceMuted = false
-  private peers = new Map<
-    string,
-    { pc: RTCPeerConnection; audio: HTMLAudioElement }
-  >()
+  private peers = new Map<string, PeerLink>()
   private memberIds = new Set<string>()
+  private audioCtx: AudioContext | null = null
+  private localAnalyser: LocalAnalyser | null = null
+  private pollTimer: number | undefined
+  private lastSpeakingKey = ''
   private readonly opts: VoiceMeshOptions
+  private readonly levelBuf = new Uint8Array(256)
 
   constructor(opts: VoiceMeshOptions) {
     this.opts = opts
@@ -56,15 +78,18 @@ export class VoiceMesh {
     }
     this.enabled = enabled
     if (!enabled) {
+      this.stopSpeakingPoll()
       this.teardownMedia()
       this.closeAllPeers()
       this.muted = true
       this.forceMuted = false
+      this.emitSpeaking([])
       this.opts.onLocalMuteChange?.(true, false)
       return
     }
     await this.ensureLocalStream()
     await this.syncPeers()
+    this.startSpeakingPoll()
   }
 
   setMembers(peerIds: string[]) {
@@ -91,6 +116,18 @@ export class VoiceMesh {
     this.applyLocalTrackEnabled()
     this.opts.send({ type: 'self_mute', muted })
     this.opts.onLocalMuteChange?.(this.muted, this.forceMuted)
+  }
+
+  /** Re-tenta play dos áudios remotos após gesto do usuário. */
+  resumePlayback() {
+    for (const { audio } of this.peers.values()) {
+      void audio.play().catch(() => {
+        /* autoplay */
+      })
+    }
+    void this.audioCtx?.resume().catch(() => {
+      /* ok */
+    })
   }
 
   async handleOffer(from: string, sdp: string) {
@@ -122,12 +159,130 @@ export class VoiceMesh {
 
   teardown() {
     this.enabled = false
+    this.stopSpeakingPoll()
     this.teardownMedia()
     this.closeAllPeers()
     this.memberIds.clear()
     this.selfPeerId = ''
     this.muted = true
     this.forceMuted = false
+    this.emitSpeaking([])
+  }
+
+  private emitSpeaking(ids: string[]) {
+    const key = ids.slice().sort().join(',')
+    if (key === this.lastSpeakingKey) return
+    this.lastSpeakingKey = key
+    this.opts.onSpeakingChange?.(ids)
+  }
+
+  private ensureAudioCtx() {
+    if (!this.audioCtx) {
+      this.audioCtx = new AudioContext()
+    }
+    return this.audioCtx
+  }
+
+  private attachLocalAnalyser(stream: MediaStream) {
+    this.detachLocalAnalyser()
+    try {
+      const ctx = this.ensureAudioCtx()
+      const source = ctx.createMediaStreamSource(stream)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.5
+      source.connect(analyser)
+      this.localAnalyser = { analyser, source, lastSpokeAt: 0, speaking: false }
+    } catch {
+      this.localAnalyser = null
+    }
+  }
+
+  private detachLocalAnalyser() {
+    if (!this.localAnalyser) return
+    try {
+      this.localAnalyser.source.disconnect()
+    } catch {
+      /* ok */
+    }
+    this.localAnalyser = null
+  }
+
+  private attachRemoteAnalyser(link: PeerLink, stream: MediaStream) {
+    this.detachRemoteAnalyser(link)
+    if (!stream.getAudioTracks().length) return
+    try {
+      const ctx = this.ensureAudioCtx()
+      const source = ctx.createMediaStreamSource(stream)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.5
+      source.connect(analyser)
+      link.source = source
+      link.analyser = analyser
+    } catch {
+      link.source = null
+      link.analyser = null
+    }
+  }
+
+  private detachRemoteAnalyser(link: PeerLink) {
+    if (link.source) {
+      try {
+        link.source.disconnect()
+      } catch {
+        /* ok */
+      }
+    }
+    link.source = null
+    link.analyser = null
+    link.speaking = false
+    link.lastSpokeAt = 0
+  }
+
+  private startSpeakingPoll() {
+    this.stopSpeakingPoll()
+    this.pollTimer = window.setInterval(() => this.pollSpeaking(), POLL_MS)
+  }
+
+  private stopSpeakingPoll() {
+    if (this.pollTimer !== undefined) {
+      window.clearInterval(this.pollTimer)
+      this.pollTimer = undefined
+    }
+  }
+
+  private readRms(analyser: AnalyserNode) {
+    analyser.getByteTimeDomainData(this.levelBuf)
+    return rmsFromTimeDomain(this.levelBuf)
+  }
+
+  private pollSpeaking() {
+    if (!this.enabled) return
+    const now = Date.now()
+    const speaking: string[] = []
+
+    const local = this.localAnalyser
+    if (local && !this.muted && !this.forceMuted && this.selfPeerId) {
+      const rms = this.readRms(local.analyser)
+      const next = isSpeaking(rms, local.speaking, local.lastSpokeAt, now)
+      if (next) local.lastSpokeAt = now
+      local.speaking = next
+      if (next) speaking.push(this.selfPeerId)
+    } else if (local) {
+      local.speaking = false
+    }
+
+    for (const [peerId, link] of this.peers) {
+      if (!link.analyser) continue
+      const rms = this.readRms(link.analyser)
+      const next = isSpeaking(rms, link.speaking, link.lastSpokeAt, now)
+      if (next) link.lastSpokeAt = now
+      link.speaking = next
+      if (next) speaking.push(peerId)
+    }
+
+    this.emitSpeaking(speaking)
   }
 
   private applyLocalTrackEnabled() {
@@ -148,6 +303,7 @@ export class VoiceMesh {
     if (track) track.enabled = false
     this.localStream = stream
     this.applyLocalTrackEnabled()
+    this.attachLocalAnalyser(stream)
     for (const { pc } of this.peers.values()) {
       for (const t of stream.getTracks()) {
         if (!pc.getSenders().some((s) => s.track === t)) {
@@ -159,9 +315,17 @@ export class VoiceMesh {
   }
 
   private teardownMedia() {
-    if (!this.localStream) return
-    for (const t of this.localStream.getTracks()) t.stop()
-    this.localStream = null
+    this.detachLocalAnalyser()
+    if (this.localStream) {
+      for (const t of this.localStream.getTracks()) t.stop()
+      this.localStream = null
+    }
+    if (this.audioCtx) {
+      void this.audioCtx.close().catch(() => {
+        /* ok */
+      })
+      this.audioCtx = null
+    }
   }
 
   private closeAllPeers() {
@@ -172,6 +336,7 @@ export class VoiceMesh {
     const link = this.peers.get(peerId)
     if (!link) return
     this.peers.delete(peerId)
+    this.detachRemoteAnalyser(link)
     try {
       link.pc.close()
     } catch {
@@ -203,7 +368,15 @@ export class VoiceMesh {
     audio.setAttribute('playsinline', 'true')
     document.body.appendChild(audio)
 
-    this.peers.set(peerId, { pc, audio })
+    const entry: PeerLink = {
+      pc,
+      audio,
+      analyser: null,
+      source: null,
+      lastSpokeAt: 0,
+      speaking: false,
+    }
+    this.peers.set(peerId, entry)
 
     if (this.localStream) {
       for (const t of this.localStream.getTracks()) {
@@ -226,6 +399,7 @@ export class VoiceMesh {
       void audio.play().catch(() => {
         /* autoplay */
       })
+      this.attachRemoteAnalyser(entry, stream)
     }
     pc.onicecandidate = (ev) => {
       this.opts.send({
