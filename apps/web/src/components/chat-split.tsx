@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { MessageSquare, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { usePanelRef } from 'react-resizable-panels'
 import { Button } from '@/components/ui/button'
@@ -19,7 +19,7 @@ function readStored(): Stored {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as Partial<Stored> | null
     if (raw && typeof raw.size === 'number' && Number.isFinite(raw.size)) {
       return {
-        size: Math.min(50, Math.max(18, raw.size)),
+        size: Math.min(55, Math.max(18, raw.size)),
         minimized: Boolean(raw.minimized),
       }
     }
@@ -57,16 +57,20 @@ type Props = {
 export function ChatSplit({ children, chat }: Props) {
   const { immersive } = useShellMode()
   const desktop = useIsDesktop()
-  const [stored, setStored] = useState(readStored)
+  const initial = useRef(readStored())
+  const [minimized, setMinimized] = useState(initial.current.minimized)
+  const sizeRef = useRef(initial.current.size)
   const chatPanelRef = usePanelRef()
+  const persistTimer = useRef<number | undefined>(undefined)
 
   function persist(partial: Partial<Stored>) {
-    setStored((prev) => {
-      const next = { ...prev, ...partial }
-      if (next.size === prev.size && next.minimized === prev.minimized) return prev
-      writeStored(next)
-      return next
-    })
+    const next: Stored = {
+      size: partial.size ?? sizeRef.current,
+      minimized: partial.minimized ?? minimized,
+    }
+    sizeRef.current = next.size
+    writeStored(next)
+    if (partial.minimized !== undefined) setMinimized(partial.minimized)
   }
 
   useEffect(() => {
@@ -74,11 +78,11 @@ export function ChatSplit({ children, chat }: Props) {
     const id = requestAnimationFrame(() => {
       const panel = chatPanelRef.current
       if (!panel) return
-      if (stored.minimized && !panel.isCollapsed()) panel.collapse()
-      if (!stored.minimized && panel.isCollapsed()) panel.expand()
+      if (minimized && !panel.isCollapsed()) panel.collapse()
+      if (!minimized && panel.isCollapsed()) panel.expand()
     })
     return () => cancelAnimationFrame(id)
-  }, [desktop, stored.minimized, chatPanelRef])
+  }, [desktop, minimized, chatPanelRef])
 
   function minimize() {
     persist({ minimized: true })
@@ -94,7 +98,7 @@ export function ChatSplit({ children, chat }: Props) {
     return (
       <div className={cn('flex h-full min-h-0 flex-col', !immersive && 'pb-20 sm:pb-0')}>
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
-        {stored.minimized ? (
+        {minimized ? (
           <button
             type="button"
             className="flex shrink-0 items-center justify-center gap-2 border-t border-border bg-card/80 px-3 py-2.5 text-sm font-medium"
@@ -115,7 +119,12 @@ export function ChatSplit({ children, chat }: Props) {
 
   return (
     <ResizablePanelGroup orientation="horizontal" className="h-full min-h-0">
-      <ResizablePanel id="main" defaultSize={`${100 - stored.size}`} minSize="40" className="min-h-0">
+      <ResizablePanel
+        id="main"
+        defaultSize={`${100 - initial.current.size}`}
+        minSize="30%"
+        className="min-h-0"
+      >
         <div className="h-full min-h-0 overflow-hidden">{children}</div>
       </ResizablePanel>
       <ResizableHandle withHandle />
@@ -123,26 +132,33 @@ export function ChatSplit({ children, chat }: Props) {
         id="chat"
         panelRef={chatPanelRef}
         collapsible
-        collapsedSize={40}
-        minSize="18"
-        defaultSize={`${stored.size}`}
+        collapsedSize="0%"
+        collapsedThreshold="8%"
+        minSize="18%"
+        maxSize="55%"
+        defaultSize={`${initial.current.size}`}
         className="min-h-0"
         onResize={(panelSize) => {
           const collapsed = chatPanelRef.current?.isCollapsed() ?? false
-          setStored((prev) => {
-            const next: Stored = {
-              size: collapsed ? prev.size : Math.min(50, Math.max(18, panelSize.asPercentage)),
-              minimized: collapsed,
-            }
-            if (next.size === prev.size && next.minimized === prev.minimized) return prev
-            writeStored(next)
-            return next
-          })
+          if (!collapsed) {
+            sizeRef.current = Math.min(55, Math.max(18, panelSize.asPercentage))
+          }
+          if (persistTimer.current) window.clearTimeout(persistTimer.current)
+          persistTimer.current = window.setTimeout(() => {
+            writeStored({ size: sizeRef.current, minimized: collapsed })
+            setMinimized(collapsed)
+          }, 120)
         }}
       >
-        {stored.minimized ? (
+        {minimized ? (
           <div className="flex h-full flex-col items-center border-l border-border bg-card/40 py-2">
-            <Button type="button" variant="ghost" size="icon" aria-label="Abrir mensagens" onClick={restore}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Abrir mensagens"
+              onClick={restore}
+            >
               <PanelRightOpen className="size-4" />
             </Button>
           </div>
@@ -160,8 +176,16 @@ export function ChatSplit({ children, chat }: Props) {
 function ChatChrome({ onMinimize }: { onMinimize: () => void }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-      <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Mensagens</span>
-      <Button type="button" variant="ghost" size="icon" aria-label="Minimizar mensagens" onClick={onMinimize}>
+      <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        Mensagens
+      </span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Minimizar mensagens"
+        onClick={onMinimize}
+      >
         <PanelRightClose className="size-4" />
       </Button>
     </div>

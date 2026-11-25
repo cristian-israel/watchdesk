@@ -1,13 +1,32 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
+import {
+  Check,
+  Copy,
+  Link2,
+  LogOut,
+  MessageSquare,
+  Mic,
+  MicOff,
+  MonitorUp,
+  PanelRightClose,
+  PanelRightOpen,
+  ScreenShare,
+  ScreenShareOff,
+  Settings2,
+  Users,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
-import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { api, apiOrThrow, type JoinMode, type SessionInfo } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import {
   appendMessage,
   appendSystem,
@@ -41,6 +60,36 @@ type RemoteTile = {
   tile: HTMLDivElement
 }
 
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
+  return `${parts[0]![0] || ''}${parts[1]![0] || ''}`.toUpperCase()
+}
+
+function Pill({
+  children,
+  tone = 'muted',
+}: {
+  children: import('react').ReactNode
+  tone?: 'muted' | 'success' | 'warning' | 'live'
+}) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+        tone === 'muted' && 'bg-muted text-muted-foreground',
+        tone === 'success' && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+        tone === 'warning' && 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+        tone === 'live' && 'bg-primary/15 text-primary',
+      )}
+    >
+      {tone === 'live' ? <span className="size-1.5 animate-pulse rounded-full bg-primary" /> : null}
+      {children}
+    </span>
+  )
+}
+
 export function HostPage() {
   const { room = '' } = useParams()
   const navigate = useNavigate()
@@ -67,6 +116,10 @@ export function HostPage() {
   const [selfPeerId, setSelfPeerId] = useState('')
   const [screenAllowed, setScreenAllowed] = useState<Set<string>>(() => new Set())
   const [localShareCount, setLocalShareCount] = useState(0)
+  const [remoteShareCount, setRemoteShareCount] = useState(0)
+  const [linkCopied, setLinkCopied] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [chatOpen, setChatOpen] = useState(true)
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
@@ -123,6 +176,7 @@ export function HostPage() {
       grid.appendChild(tile)
       entry = { info, video, tile }
       remoteTilesRef.current.set(info.slot, entry)
+      setRemoteShareCount(remoteTilesRef.current.size)
     }
     entry.info = info
     const tag = entry.tile.querySelector('.tag') as HTMLElement
@@ -140,10 +194,12 @@ export function HostPage() {
     if (!entry) return
     remoteTilesRef.current.delete(slot)
     entry.tile.remove()
+    setRemoteShareCount(remoteTilesRef.current.size)
   }
 
   function clearRemoteTiles() {
     for (const slot of [...remoteTilesRef.current.keys()]) removeRemoteTile(slot)
+    setRemoteShareCount(0)
   }
 
   const { send } = useSignal(
@@ -473,7 +529,9 @@ export function HostPage() {
   async function copy(url: string) {
     try {
       await navigator.clipboard.writeText(url)
+      setLinkCopied(true)
       toast.success('Link copiado')
+      window.setTimeout(() => setLinkCopied(false), 1800)
     } catch {
       toast.error('Não foi possível copiar o link')
     }
@@ -490,15 +548,19 @@ export function HostPage() {
   if (!panel) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 sm:pb-0">
-        <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
-          <p className="text-sm text-muted-foreground">
-            {denied || 'Não foi possível abrir o painel nesta sala.'}
-          </p>
-          <Button type="button" variant="outline" onClick={() => navigate('/salas')}>
-            Voltar às salas
-          </Button>
-        </div>
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Transmitir — {room}</CardTitle>
+            <CardDescription>
+              {denied || 'Não foi possível abrir o painel nesta sala.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button type="button" variant="outline" onClick={() => navigate('/salas')}>
+              Voltar às salas
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     )
   }
@@ -506,224 +568,65 @@ export function HostPage() {
   const sorted = [...shares.entries()].sort((a, b) => a[0] - b[0])
   const viewers = roster.filter((m) => m.role === 'viewer')
   const link = viewerInviteUrl(room)
+  const hostName = profileName || displayName
+  const selfSpeaking = speakingIds.includes(selfPeerId) && !voiceMuted
+  const slotBudget = shares.size >= MAX_SLOTS
 
   return (
-    <ChatSplit
-      chat={
-        <RoomChat
-          items={chatFeed}
-          selfName={profileName || displayName}
-          selfDeviceId={deviceId}
-          onSend={(body) => sendRef.current({ type: 'chat', body })}
-        />
-      }
-    >
-      <div className="h-full min-h-0 overflow-y-auto p-4">
-        <div className="mx-auto flex max-w-2xl flex-col gap-4">
-          <header className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h1 className="text-xl font-semibold">Transmitir — {room}</h1>
-              <p className="text-sm text-muted-foreground">
-                {profileName || displayName} · {active ? 'sala ativa' : 'sala desativada'} ·{' '}
-                {joinMode === 'open' ? 'pública' : 'com aceite'} · máx. {maxViewers}
-              </p>
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={() => void logout()}>
-              Sair
-            </Button>
-          </header>
-
-          <section className="space-y-2">
-            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Link para espectadores
-            </h2>
-            <div className="flex items-start justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-              <span className="font-mono text-xs break-all">{link}</span>
-              <Button type="button" variant="outline" size="sm" onClick={() => void copy(link)}>
-                Copiar
-              </Button>
-            </div>
-          </section>
-
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="truncate font-mono text-sm font-semibold tracking-tight">{room}</h1>
+            <Pill tone={active ? 'live' : 'warning'}>{active ? 'Ao vivo' : 'Pausada'}</Pill>
+            <Pill>{joinMode === 'open' ? 'Pública' : 'Com aceite'}</Pill>
+            {voiceEnabled ? <Pill tone="success">Voz</Pill> : null}
+          </div>
+          <p className="truncate text-xs text-muted-foreground">
+            {hostName} · {viewers.length}/{maxViewers}
+            {localShareCount ? ` · ${localShareCount} tela(s)` : ''}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             type="button"
-            disabled={shares.size + remoteTilesRef.current.size >= MAX_SLOTS}
-            onClick={() => void shareScreen()}
+            variant="outline"
+            size="sm"
+            onClick={() => void copy(link)}
+            className="gap-1.5"
           >
-            Compartilhar uma tela
+            {linkCopied ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
+            {linkCopied ? 'Copiado' : 'Convite'}
           </Button>
+          <Button
+            type="button"
+            variant={showSettings ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setShowSettings((v) => !v)}
+            className="gap-1.5"
+          >
+            <Settings2 className="size-3.5" />
+            Sala
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5 sm:hidden"
+            onClick={() => setChatOpen((v) => !v)}
+          >
+            <MessageSquare className="size-3.5" />
+            Chat
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => void logout()}>
+            <LogOut className="size-3.5" />
+          </Button>
+        </div>
+      </header>
 
-          <section>
-            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Suas telas
-            </h2>
-            {!sorted.length ? (
-              <p className="text-sm text-muted-foreground">Nada sendo compartilhado por você.</p>
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {sorted.map(([slot, e]) => (
-                  <li
-                    key={slot}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
-                  >
-                    <span className="text-sm">
-                      Tela {slot + 1}
-                      {e.state === 'live' ? ' · transmitindo' : ' · conectando…'}
-                    </span>
-                    <Button type="button" variant="outline" size="sm" onClick={() => stopSlot(slot)}>
-                      Parar
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section>
-            <h2 className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Telas da sala
-            </h2>
-            <div
-              ref={remoteGridRef}
-              className="grid min-h-16 content-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))]"
-            />
-            <p className="text-sm text-muted-foreground">
-              Telas de espectadores liberados aparecem aqui.
-              {localShareCount ? ` · você com ${localShareCount} no ar` : ''}
-            </p>
-          </section>
-
-          {joinMode === 'ask' ? (
-            <section className="space-y-2">
-              <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Pedidos ({pending.length})
-              </h2>
-              {!pending.length ? (
-                <p className="text-sm text-muted-foreground">Ninguém aguardando.</p>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {pending.map((p) => (
-                    <li
-                      key={p.peerId}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
-                    >
-                      <span className="text-sm">{p.displayName}</span>
-                      <div className="flex gap-2">
-                        <Button type="button" size="sm" onClick={() => admit(p.peerId, true)}>
-                          Aceitar
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => admit(p.peerId, false)}
-                        >
-                          Recusar
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ) : null}
-
-          <section className="space-y-2">
-            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Espectadores ({viewers.length}/{maxViewers})
-            </h2>
-            {!viewers.length ? (
-              <p className="text-sm text-muted-foreground">Ninguém assistindo.</p>
-            ) : (
-              <>
-                <ul className="flex flex-col gap-2 text-sm">
-                  {viewers.map((v) => {
-                    const vs = voicePeers.find((p) => p.peerId === v.peerId)
-                    const talking = speakingIds.includes(v.peerId)
-                    return (
-                      <li
-                        key={v.peerId}
-                        className="flex flex-wrap items-center justify-between gap-2"
-                      >
-                        <span>
-                          {v.displayName}
-                          {voiceEnabled ? (
-                            <span className="ml-2 text-xs text-muted-foreground">
-                              {vs?.forceMuted
-                                ? 'mutado pelo host'
-                                : vs?.muted
-                                  ? 'mudo'
-                                  : talking
-                                    ? 'falando'
-                                    : 'mic ligado'}
-                            </span>
-                          ) : null}
-                        </span>
-                        <div className="flex flex-wrap gap-2">
-                          {voiceEnabled ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
-                            >
-                              {vs?.forceMuted ? 'Liberar mic' : 'Mutar'}
-                            </Button>
-                          ) : null}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              setViewerScreenAllow(v.peerId, !screenAllowed.has(v.peerId))
-                            }
-                          >
-                            {screenAllowed.has(v.peerId) ? 'Revogar tela' : 'Permitir tela'}
-                          </Button>
-                        </div>
-                      </li>
-                    )
-                  })}
-                </ul>
-                <Button type="button" variant="outline" size="sm" onClick={() => void kickAllViewers()}>
-                  Remover todos
-                </Button>
-              </>
-            )}
-          </section>
-
-          {voiceEnabled ? (
-            <section className="space-y-2 rounded-lg border border-border p-3">
-              <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Seu microfone
-              </h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={voiceForceMuted}
-                  onClick={() => void toggleSelfMute()}
-                >
-                  {voiceMuted ? 'Ativar mic' : 'Mutar mic'}
-                </Button>
-                {voiceForceMuted ? (
-                  <span className="text-sm text-muted-foreground">Mic bloqueado</span>
-                ) : (
-                  <span className="text-sm text-muted-foreground">
-                    {voiceMuted
-                      ? 'Você está mudo'
-                      : speakingIds.includes(selfPeerId)
-                        ? 'Falando…'
-                        : 'Mic ligado'}
-                  </span>
-                )}
-              </div>
-            </section>
-          ) : null}
-
-          <section className="space-y-3 rounded-lg border border-border p-3">
-            <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Sala</h2>
+      {showSettings ? (
+        <div className="shrink-0 border-b border-border bg-muted/30 px-3 py-2.5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -739,7 +642,7 @@ export function HostPage() {
                   )
                 }
               >
-                {active ? 'Desativar sala' : 'Reativar sala'}
+                {active ? 'Desativar' : 'Reativar'}
               </Button>
               <Button
                 type="button"
@@ -750,13 +653,12 @@ export function HostPage() {
                     { joinMode: joinMode === 'ask' ? 'open' : 'ask' },
                     {
                       pending: 'Atualizando…',
-                      success:
-                        joinMode === 'ask' ? 'Sala pública' : 'Entrada com aceite',
+                      success: joinMode === 'ask' ? 'Sala pública' : 'Entrada com aceite',
                     },
                   )
                 }
               >
-                {joinMode === 'ask' ? 'Tornar pública' : 'Exigir aceite'}
+                {joinMode === 'ask' ? 'Pública' : 'Com aceite'}
               </Button>
               <Button
                 type="button"
@@ -786,7 +688,9 @@ export function HostPage() {
               }}
             >
               <div className="space-y-1">
-                <Label htmlFor="max">Máx. espectadores</Label>
+                <Label htmlFor="max" className="text-xs">
+                  Máx.
+                </Label>
                 <Input
                   id="max"
                   type="number"
@@ -794,16 +698,362 @@ export function HostPage() {
                   max={8}
                   value={newMax}
                   onChange={(e) => setNewMax(Number(e.target.value))}
-                  className="w-24"
+                  className="h-8 w-16"
                 />
               </div>
               <Button type="submit" size="sm" variant="outline">
-                Salvar limite
+                Salvar
               </Button>
             </form>
-          </section>
+          </div>
         </div>
+      ) : null}
+
+      {/* IDE-style: Stage | People | Chat */}
+      <div className="min-h-0 flex-1">
+        <ResizablePanelGroup orientation="horizontal" className="h-full">
+          <ResizablePanel id="host-stage" defaultSize="52%" minSize="30%" className="min-h-0">
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={slotBudget || action.busy}
+                  onClick={() => void shareScreen()}
+                  className="gap-1.5"
+                >
+                  <MonitorUp className="size-3.5" />
+                  Compartilhar
+                </Button>
+                {voiceEnabled ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={voiceMuted ? 'outline' : 'default'}
+                    disabled={voiceForceMuted || action.busy}
+                    onClick={() => void toggleSelfMute()}
+                    className="gap-1.5"
+                  >
+                    {voiceMuted ? <MicOff className="size-3.5" /> : <Mic className="size-3.5" />}
+                    {voiceForceMuted
+                      ? 'Bloqueado'
+                      : voiceMuted
+                        ? 'Mic'
+                        : selfSpeaking
+                          ? 'Falando'
+                          : 'Mutar'}
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void patchRoom(
+                        { voiceEnabled: true },
+                        { pending: 'Ativando…', success: 'Voz ligada' },
+                      )
+                    }
+                    className="gap-1.5"
+                  >
+                    <Mic className="size-3.5" />
+                    Ligar voz
+                  </Button>
+                )}
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+                {sorted.length ? (
+                  <ul className="flex flex-col gap-2">
+                    {sorted.map(([slot, e]) => (
+                      <li
+                        key={slot}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                            <MonitorUp className="size-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">Tela {slot + 1}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {e.state === 'live' ? 'No ar' : 'Conectando…'} · você
+                            </p>
+                          </div>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={() => stopSlot(slot)}>
+                          Parar
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                <div
+                  ref={remoteGridRef}
+                  className="grid content-start gap-3 empty:hidden [grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))]"
+                />
+
+                {!sorted.length && !remoteShareCount ? (
+                  <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/15 px-6 text-center">
+                    <ScreenShare className="size-8 text-muted-foreground/70" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Palco vazio</p>
+                      <p className="max-w-sm text-xs text-muted-foreground">
+                        Compartilhe uma tela ou libere um espectador na coluna Pessoas.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle className="hidden sm:flex" />
+
+          <ResizablePanel
+            id="host-people"
+            defaultSize="22%"
+            minSize="16%"
+            maxSize="40%"
+            className="min-h-0 hidden sm:block"
+          >
+            <aside className="flex h-full min-h-0 flex-col bg-card">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <Users className="size-3.5 text-muted-foreground" />
+                  <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                    Pessoas
+                  </span>
+                </div>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {viewers.length}/{maxViewers}
+                </span>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-2">
+                {joinMode === 'ask' && pending.length ? (
+                  <div className="space-y-1.5">
+                    <p className="px-1 text-[10px] font-semibold tracking-wide text-amber-600 uppercase dark:text-amber-400">
+                      Pedidos
+                    </p>
+                    {pending.map((p) => (
+                      <div key={p.peerId} className="rounded-lg border border-border p-2">
+                        <div className="mb-2 flex items-center gap-2">
+                          <Avatar size="sm">
+                            <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
+                          </Avatar>
+                          <span className="truncate text-sm">{p.displayName}</span>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 flex-1"
+                            onClick={() => admit(p.peerId, true)}
+                          >
+                            Aceitar
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 flex-1"
+                            onClick={() => admit(p.peerId, false)}
+                          >
+                            Recusar
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <ul className="space-y-0.5">
+                  <li className="flex items-center gap-2 rounded-md px-1.5 py-1.5">
+                    <Avatar size="sm">
+                      <AvatarFallback>{initials(hostName)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm">
+                        {hostName}{' '}
+                        <span className="text-muted-foreground">(você)</span>
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {voiceEnabled
+                          ? voiceMuted
+                            ? 'Mudo'
+                            : selfSpeaking
+                              ? 'Falando'
+                              : 'Mic ligado'
+                          : 'Host'}
+                      </p>
+                    </div>
+                  </li>
+                  {!viewers.length ? (
+                    <li className="px-1.5 py-2 text-xs text-muted-foreground">
+                      Sala vazia — envie o convite.
+                    </li>
+                  ) : (
+                    viewers.map((v) => {
+                      const vs = voicePeers.find((p) => p.peerId === v.peerId)
+                      const talking = speakingIds.includes(v.peerId)
+                      const canScreen = screenAllowed.has(v.peerId)
+                      return (
+                        <li key={v.peerId} className="rounded-md px-1.5 py-1.5 hover:bg-muted/60">
+                          <div className="flex items-center gap-2">
+                            <div className="relative shrink-0">
+                              <Avatar size="sm">
+                                <AvatarFallback>{initials(v.displayName)}</AvatarFallback>
+                              </Avatar>
+                              {talking && !vs?.muted ? (
+                                <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full bg-emerald-500 ring-2 ring-card" />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm">{v.displayName}</p>
+                              <p className="truncate text-[11px] text-muted-foreground">
+                                {voiceEnabled
+                                  ? vs?.forceMuted
+                                    ? 'Mutado'
+                                    : vs?.muted
+                                      ? 'Mudo'
+                                      : talking
+                                        ? 'Falando'
+                                        : 'Mic ligado'
+                                  : canScreen
+                                    ? 'Pode compartilhar'
+                                    : 'Espectador'}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-1 pl-7">
+                            {voiceEnabled ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-6 gap-1 px-1.5 text-[11px]"
+                                onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
+                              >
+                                {vs?.forceMuted ? (
+                                  <Mic className="size-3" />
+                                ) : (
+                                  <MicOff className="size-3" />
+                                )}
+                                {vs?.forceMuted ? 'Liberar' : 'Mutar'}
+                              </Button>
+                            ) : null}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 gap-1 px-1.5 text-[11px]"
+                              onClick={() => setViewerScreenAllow(v.peerId, !canScreen)}
+                            >
+                              {canScreen ? (
+                                <ScreenShareOff className="size-3" />
+                              ) : (
+                                <ScreenShare className="size-3" />
+                              )}
+                              {canScreen ? 'Revogar' : 'Tela'}
+                            </Button>
+                          </div>
+                        </li>
+                      )
+                    })
+                  )}
+                </ul>
+                {viewers.length ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-full text-xs text-destructive hover:text-destructive"
+                    onClick={() => void kickAllViewers()}
+                  >
+                    Remover todos
+                  </Button>
+                ) : null}
+              </div>
+
+              <div className="shrink-0 space-y-1.5 border-t border-border p-2">
+                <Label className="text-[10px] text-muted-foreground">Convite</Label>
+                <div className="flex gap-1.5">
+                  <Input readOnly value={link} className="h-7 font-mono text-[10px]" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2"
+                    onClick={() => void copy(link)}
+                  >
+                    <Copy className="size-3" />
+                  </Button>
+                </div>
+              </div>
+            </aside>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle className={cn(!chatOpen && 'hidden', 'hidden sm:flex')} />
+
+          <ResizablePanel
+            id="host-chat"
+            defaultSize="26%"
+            minSize="18%"
+            maxSize="45%"
+            collapsible
+            collapsedSize="0%"
+            collapsedThreshold="10%"
+            className={cn('min-h-0', !chatOpen && 'hidden sm:flex')}
+            onResize={(size) => {
+              if (size.asPercentage < 2) setChatOpen(false)
+              else setChatOpen(true)
+            }}
+          >
+            <div className="flex h-full min-h-0 flex-col border-l border-border bg-card/50">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+                <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                  Mensagens
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Minimizar chat"
+                  onClick={() => setChatOpen(false)}
+                >
+                  <PanelRightClose className="size-3.5" />
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1">
+                <RoomChat
+                  items={chatFeed}
+                  selfName={hostName}
+                  selfDeviceId={deviceId}
+                  onSend={(body) => sendRef.current({ type: 'chat', body })}
+                />
+              </div>
+            </div>
+          </ResizablePanel>
+
+          {!chatOpen ? (
+            <div className="hidden w-10 shrink-0 flex-col items-center border-l border-border bg-card py-2 sm:flex">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                aria-label="Abrir chat"
+                onClick={() => setChatOpen(true)}
+              >
+                <PanelRightOpen className="size-4" />
+              </Button>
+            </div>
+          ) : null}
+        </ResizablePanelGroup>
       </div>
-    </ChatSplit>
+    </div>
   )
 }
