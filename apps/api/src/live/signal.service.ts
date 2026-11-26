@@ -203,6 +203,7 @@ export class SignalService {
       active: room.active,
       joinMode,
       voiceEnabled: room.voiceEnabled,
+      expiresAt: room.expiresAt,
       voiceState: asPending ? [] : voiceState(room),
       screenAllowed: session.role === 'host' ? [...room.screenAllowed] : undefined,
       canShareScreen:

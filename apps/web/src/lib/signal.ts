@@ -48,6 +48,7 @@ export type SignalInbound =
       active: boolean
       joinMode?: JoinMode
       voiceEnabled?: boolean
+      expiresAt?: string | null
       voiceState?: VoicePeerState[]
       screenAllowed?: string[]
       canShareScreen?: boolean
@@ -79,6 +80,7 @@ export type SignalInbound =
       maxViewers: number
       joinMode?: JoinMode
       voiceEnabled?: boolean
+      expiresAt?: string | null
     }
   | { type: 'admit_request'; peerId: string; displayName: string }
   | { type: 'admit_result'; accepted: boolean; message?: string; slots?: SlotInfo[] | number[] }

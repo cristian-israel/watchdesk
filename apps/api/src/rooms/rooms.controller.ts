@@ -257,7 +257,18 @@ export class RoomsController {
     if ('atCap' in result) {
       throw new HttpException('Sala já no teto de 24 horas; não dá para estender.', 409)
     }
-    return { ok: true, room: this.rooms.roomSummary(result.row) }
+    const summary = this.rooms.roomSummary(result.row)
+    const rt = this.live.ensure(result.row)
+    rt.expiresAt = summary.expiresAt
+    broadcastRoom(rt, {
+      type: 'room_updated',
+      active: rt.active,
+      maxViewers: rt.maxViewers,
+      joinMode: rt.joinMode,
+      voiceEnabled: rt.voiceEnabled,
+      expiresAt: rt.expiresAt,
+    })
+    return { ok: true, room: summary }
   }
 
   @Post(':slug/designate-controller')
@@ -394,6 +405,7 @@ export class RoomsController {
       maxViewers: rt.maxViewers,
       joinMode: rt.joinMode,
       voiceEnabled: rt.voiceEnabled,
+      expiresAt: rt.expiresAt,
     })
     return {
       ok: true,

@@ -41,6 +41,7 @@ export type RuntimeRoom = {
   active: boolean
   joinMode: JoinMode
   voiceEnabled: boolean
+  expiresAt: string | null
   host: LiveClient | null
   /** slot → publisher peerId */
   slotOwners: Map<number, string>
@@ -58,12 +59,19 @@ export type RoomRow = {
   active: number | boolean
   join_mode?: string
   voice_enabled?: number | boolean
+  expires_at?: Date | string | null
+}
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (!value) return null
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
 }
 
 export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): RuntimeRoom {
   let r = live.get(row.slug)
   const joinMode: JoinMode = row.join_mode === 'open' ? 'open' : 'ask'
   const voiceEnabled = Boolean(row.voice_enabled)
+  const expiresAt = toIso(row.expires_at)
   if (!r) {
     r = {
       slug: row.slug,
@@ -72,6 +80,7 @@ export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): Runtim
       active: Boolean(row.active),
       joinMode,
       voiceEnabled,
+      expiresAt,
       host: null,
       slotOwners: new Map(),
       screenAllowed: new Set(),
@@ -86,6 +95,7 @@ export function ensureLive(live: Map<string, RuntimeRoom>, row: RoomRow): Runtim
     r.active = Boolean(row.active)
     r.joinMode = joinMode
     r.voiceEnabled = voiceEnabled
+    if (expiresAt) r.expiresAt = expiresAt
   }
   return r
 }
@@ -517,6 +527,7 @@ export function createTestRoom(slug = 'test'): RuntimeRoom {
     active: true,
     joinMode: 'ask',
     voiceEnabled: false,
+    expiresAt: null,
     host: null,
     slotOwners: new Map(),
     screenAllowed: new Set(),

@@ -22,6 +22,8 @@ export type SessionRow = RowDataPacket & {
   join_mode: string
   voice_enabled: number | boolean
   room_device_id: string
+  room_expires_at: Date | string | null
+  room_created_at: Date | string | null
 }
 
 @Injectable()
@@ -53,7 +55,9 @@ export class SessionsService {
     if (!token || token.length < 16) return null
     const [rows] = await this.db.query<SessionRow[]>(
       `SELECT s.*, r.slug, r.active, r.max_viewers, r.creator_name, r.join_mode, r.voice_enabled,
-              r.device_id AS room_device_id
+              r.device_id AS room_device_id,
+              r.expires_at AS room_expires_at,
+              r.created_at AS room_created_at
        FROM sessions s
        JOIN rooms r ON r.id = s.room_id
        WHERE s.id = ? AND s.expires_at > UTC_TIMESTAMP(3)
@@ -87,7 +91,13 @@ export class SessionsService {
     max_viewers: number
     join_mode?: string
     voice_enabled?: number | boolean
+    expires_at?: Date | string | null
+    created_at?: Date | string | null
+    room_expires_at?: Date | string | null
+    room_created_at?: Date | string | null
   }) {
+    const exp = row.expires_at ?? row.room_expires_at
+    const created = row.created_at ?? row.room_created_at
     return {
       room: row.slug,
       role: row.role,
@@ -97,6 +107,16 @@ export class SessionsService {
       joinMode: normalizeJoinMode(row.join_mode),
       voiceEnabled: Boolean(row.voice_enabled),
       links: viewerLinks(row.slug),
+      expiresAt: exp
+        ? exp instanceof Date
+          ? exp.toISOString()
+          : new Date(exp).toISOString()
+        : null,
+      createdAt: created
+        ? created instanceof Date
+          ? created.toISOString()
+          : new Date(created).toISOString()
+        : null,
     }
   }
 

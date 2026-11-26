@@ -45,6 +45,7 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
+import { RoomExpiryCountdown } from '@/components/room-expiry'
 import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
@@ -124,6 +125,7 @@ export function HostPage() {
   const [localShareCount, setLocalShareCount] = useState(0)
   const [remotes, setRemotes] = useState<Map<number, RemoteShare>>(() => new Map())
   const [linkCopied, setLinkCopied] = useState(false)
+  const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [side, setSide] = useState<SidePanel>('closed')
   const [sideWidth, setSideWidth] = useState(readSideWidth)
 
@@ -226,6 +228,7 @@ export function HostPage() {
     setNewMax(data.maxViewers)
     setJoinMode(data.joinMode || 'ask')
     setVoiceEnabled(Boolean(data.voiceEnabled))
+    setExpiresAt(data.expiresAt || data.roomSummary?.expiresAt || null)
     setDenied('')
     panelRef.current = true
     setPanel(true)
@@ -270,6 +273,7 @@ export function HostPage() {
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
+      if (msg.expiresAt !== undefined) setExpiresAt(msg.expiresAt)
       setScreenAllowed(new Set(msg.screenAllowed || []))
       viewersRef.current = new Map((msg.viewers || []).map((v) => [v.peerId, v.displayName]))
       setPending(msg.pending || [])
@@ -426,6 +430,7 @@ export function HostPage() {
       setMaxViewers(msg.maxViewers)
       setNewMax(msg.maxViewers)
       if (msg.joinMode) setJoinMode(msg.joinMode)
+      if (msg.expiresAt !== undefined) setExpiresAt(msg.expiresAt)
       if (typeof msg.voiceEnabled === 'boolean') {
         setVoiceEnabled(msg.voiceEnabled)
         if (msg.voiceEnabled) syncVoiceMembers(rosterRef.current)
@@ -698,9 +703,10 @@ export function HostPage() {
             <span className="hidden text-xs text-muted-foreground sm:inline">
               {active ? 'Ao vivo' : 'Pausada'}
             </span>
+            <RoomExpiryCountdown expiresAt={expiresAt} />
           </div>
           <p className="truncate text-xs text-muted-foreground">
-            {hostName} · {viewers.length}/{maxViewers}
+            {hostName} · {viewers.length + 1}/{maxViewers + 1}
             {localShareCount ? ` · ${localShareCount} tela(s)` : ''}
           </p>
         </div>
@@ -953,7 +959,7 @@ export function HostPage() {
 
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-muted-foreground">
-                        Na sala · {viewers.length}/{maxViewers}
+                        Na sala · {viewers.length + 1}/{maxViewers + 1}
                       </p>
                       <ul className="space-y-0.5">
                         <li className="flex items-center gap-2.5 rounded-md px-1.5 py-2">

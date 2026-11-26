@@ -98,6 +98,8 @@ export type SessionInfo = {
   joinMode: JoinMode
   voiceEnabled: boolean
   links: string[]
+  expiresAt?: string | null
+  createdAt?: string | null
   status?: 'pending' | 'admitted'
   asOwner?: boolean
   roomSummary?: DeviceRoom

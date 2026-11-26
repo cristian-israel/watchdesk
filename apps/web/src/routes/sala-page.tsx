@@ -22,6 +22,7 @@ import { useActionDialog } from '@/actions/action-dialog'
 import { AudioSettingsPanel } from '@/components/audio-settings-panel'
 import { ControlButton, IslandDivider } from '@/components/control-button'
 import { RoomChat } from '@/components/room-chat'
+import { RoomExpiryCountdown } from '@/components/room-expiry'
 import { StageBoard, type StageItem } from '@/components/stage-board'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -117,6 +118,7 @@ export function SalaPage() {
   const [waiting, setWaiting] = useState(true)
   const [chatFeed, setChatFeed] = useState<ChatFeedItem[]>([])
   const [roomActive, setRoomActive] = useState(true)
+  const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(true)
   const [voiceForceMuted, setVoiceForceMuted] = useState(false)
@@ -240,6 +242,7 @@ export function SalaPage() {
       }
       if (res.data.role === 'viewer') {
         setDisplayName(res.data.displayName)
+        setExpiresAt(res.data.expiresAt || res.data.roomSummary?.expiresAt || null)
         setActive(true)
         setAdmitPending((meta.data.joinMode || res.data.joinMode) === 'ask')
         setBooting(false)
@@ -272,6 +275,7 @@ export function SalaPage() {
           return
         }
         setDisplayName(data.displayName)
+        setExpiresAt(data.expiresAt || data.roomSummary?.expiresAt || null)
         setMissing('')
         setDenied('')
         setNeedsJoin(false)
@@ -330,6 +334,7 @@ export function SalaPage() {
       voiceRef.current?.setSelfPeerId(msg.peerId)
       const ve = Boolean(msg.voiceEnabled)
       setVoiceEnabled(ve)
+      if (msg.expiresAt !== undefined) setExpiresAt(msg.expiresAt)
       setCanShareScreen(Boolean(msg.canShareScreen))
       if (msg.admitStatus === 'pending') {
         setAdmitPending(true)
@@ -481,6 +486,7 @@ export function SalaPage() {
     }
     if (msg.type === 'room_updated') {
       setRoomActive(msg.active)
+      if (msg.expiresAt !== undefined) setExpiresAt(msg.expiresAt)
       if (typeof msg.voiceEnabled === 'boolean') {
         setVoiceEnabled(msg.voiceEnabled)
         if (!admitPendingRef.current) {
@@ -747,6 +753,7 @@ export function SalaPage() {
         <div className="min-w-0 rounded-md bg-background/80 px-2.5 py-1.5 backdrop-blur-sm">
           <div className="flex items-center gap-2">
             <h1 className="truncate font-mono text-sm font-medium">{room}</h1>
+            <RoomExpiryCountdown expiresAt={expiresAt} />
           </div>
           {voiceEnabled ? (
             <SpeakingHint
