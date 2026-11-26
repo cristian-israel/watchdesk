@@ -825,22 +825,24 @@ export function HostPage() {
             />
             <aside
               className={cn(
+                // relative sempre: o handle absolute precisa deste containing block.
+                // md:static quebrava e o handle ia para a esquerda da página.
                 'relative z-40 flex shrink-0 flex-col border-l border-border bg-card',
-                'absolute inset-y-0 right-0 w-full max-w-sm',
-                'md:static md:max-w-none md:w-[var(--host-side-w)]',
+                'max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:w-full max-md:max-w-sm',
+                'md:w-[var(--host-side-w)]',
               )}
               style={{ ['--host-side-w' as string]: `${sideWidth}px` }}
             >
-              {/* Resize handle — desktop */}
+              {/* Resize: entre palco (esquerda) e este painel */}
               <div
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Redimensionar painel"
                 onPointerDown={onSideResizePointerDown}
                 className={cn(
-                  'absolute inset-y-0 left-0 z-10 hidden w-2 cursor-col-resize touch-none md:block',
+                  'absolute inset-y-0 -left-1 z-50 hidden w-3 cursor-col-resize touch-none md:block',
                   'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border',
-                  'hover:after:bg-primary/50 active:after:bg-primary',
+                  'hover:after:bg-primary/60 active:after:w-0.5 active:after:bg-primary',
                 )}
               >
                 <div className="absolute top-1/2 left-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-border" />

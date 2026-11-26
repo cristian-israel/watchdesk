@@ -56,7 +56,7 @@ function StageVideo({
   }, [])
 
   return (
-    <div className={cn('relative overflow-hidden bg-black', className)}>
+    <div className={cn('relative overflow-hidden rounded-xl bg-black', className)}>
       <video
         ref={videoRef}
         autoPlay
@@ -81,7 +81,7 @@ function StageVideo({
             type="button"
             size="sm"
             variant="secondary"
-            className="pointer-events-auto h-7 shrink-0 bg-white/15 text-white hover:bg-white/25"
+            className="pointer-events-auto h-7 shrink-0 rounded-full bg-white/15 text-white hover:bg-white/25"
             onClick={(e) => {
               e.stopPropagation()
               item.onStop?.()
@@ -96,7 +96,7 @@ function StageVideo({
           type="button"
           size="sm"
           variant="secondary"
-          className="absolute top-2 right-2 h-7 gap-1 bg-black/55 px-2 text-xs text-white hover:bg-black/70"
+          className="absolute top-2 right-2 h-7 gap-1 rounded-full bg-black/55 px-2.5 text-xs text-white hover:bg-black/70"
           onClick={() => {
             const el = videoRef.current
             if (el) void el.requestFullscreen?.()
@@ -142,7 +142,7 @@ export function StageBoard({ items, empty, className }: Props) {
         <StageVideo
           item={focused}
           large
-          className="h-full w-full rounded-lg ring-1 ring-white/10"
+          className="h-full w-full rounded-2xl ring-1 ring-white/10"
         />
       </div>
 
@@ -159,11 +159,11 @@ export function StageBoard({ items, empty, className }: Props) {
                   title={item.label}
                   onClick={() => setFocusSlot(item.slot)}
                   className={cn(
-                    'overflow-hidden rounded-md text-left transition ring-offset-1 ring-offset-black',
+                    'overflow-hidden rounded-xl text-left transition',
                     selected ? 'ring-2 ring-primary' : 'ring-1 ring-white/15 hover:ring-white/35',
                   )}
                 >
-                  <StageVideo item={item} />
+                  <StageVideo item={item} className="rounded-xl" />
                 </button>
               )
             })}
@@ -180,11 +180,11 @@ export function StageBoard({ items, empty, className }: Props) {
                   title={item.label}
                   onClick={() => setFocusSlot(item.slot)}
                   className={cn(
-                    'w-36 shrink-0 overflow-hidden rounded-md',
+                    'w-36 shrink-0 overflow-hidden rounded-xl',
                     selected ? 'ring-2 ring-primary' : 'ring-1 ring-white/15',
                   )}
                 >
-                  <StageVideo item={item} />
+                  <StageVideo item={item} className="rounded-xl" />
                 </button>
               )
             })}
