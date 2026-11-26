@@ -1,11 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
-import { MonitorUp } from 'lucide-react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+import {
+  Headphones,
+  MessageSquare,
+  Mic,
+  MicOff,
+  MonitorUp,
+  PhoneOff,
+  ScreenShare,
+  ScreenShareOff,
+  Users,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
-import { ChatSplit } from '@/components/chat-split'
+import { AudioSettingsPanel } from '@/components/audio-settings-panel'
+import { ControlButton, IslandDivider } from '@/components/control-button'
 import { RoomChat } from '@/components/room-chat'
 import { StageBoard, type StageItem } from '@/components/stage-board'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
@@ -17,16 +35,41 @@ import {
   messagesToFeed,
   type ChatFeedItem,
 } from '@/lib/chat-feed'
+import { cn } from '@/lib/utils'
 import { useProfile } from '@/shell/profile'
 import { useImmersive } from '@/shell/shell-mode'
 import { useSignal } from '@/lib/use-signal'
 import { MAX_SLOTS, ScreenShareSession, normalizeSlots } from '@/lib/screen-share'
-import { VoiceMesh } from '@/lib/voice-mesh'
+import { VoiceMesh, voiceMeshSupportsDevices } from '@/lib/voice-mesh'
 import type { RosterMember, SignalInbound, SignalOutbound, SlotInfo } from '@/lib/signal'
 
 type RemoteShare = {
   info: SlotInfo
   stream: MediaStream
+}
+
+type SidePanel = 'closed' | 'people' | 'chat' | 'audio'
+
+const SIDE_MIN = 260
+const SIDE_MAX = 560
+const SIDE_DEFAULT = 320
+const SIDE_WIDTH_KEY = 'watchdesk.viewerSideWidth'
+
+function readSideWidth() {
+  try {
+    const n = Number(localStorage.getItem(SIDE_WIDTH_KEY))
+    if (Number.isFinite(n)) return Math.min(SIDE_MAX, Math.max(SIDE_MIN, n))
+  } catch {
+    /* ignore */
+  }
+  return SIDE_DEFAULT
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
+  return `${parts[0]![0] || ''}${parts[1]![0] || ''}`.toUpperCase()
 }
 
 function SpeakingHint({
@@ -77,9 +120,15 @@ export function SalaPage() {
   const [localSharing, setLocalSharing] = useState(false)
   const [locals, setLocals] = useState<Map<number, MediaStream>>(() => new Map())
   const [remotes, setRemotes] = useState<Map<number, RemoteShare>>(() => new Map())
+  const [side, setSide] = useState<SidePanel>('closed')
+  const [sideWidth, setSideWidth] = useState(readSideWidth)
   const watching = active && !admitPending
   useImmersive(watching)
 
+  const sideRef = useRef(side)
+  sideRef.current = side
+  const sideWidthRef = useRef(sideWidth)
+  sideWidthRef.current = sideWidth
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
   const admitPendingRef = useRef(admitPending)
@@ -91,16 +140,20 @@ export function SalaPage() {
   const rosterRef = useRef(roster)
   rosterRef.current = roster
   const voiceRef = useRef<VoiceMesh | null>(null)
-  if (!voiceRef.current) {
-    voiceRef.current = new VoiceMesh({
-      send: (msg) => sendRef.current(msg),
-      iceServers: () => iceRef.current,
-      onLocalMuteChange: (muted, forceMuted) => {
-        setVoiceMuted(muted)
-        setVoiceForceMuted(forceMuted)
-      },
-      onSpeakingChange: (ids) => setSpeakingIds(ids),
-    })
+  {
+    const prev = voiceRef.current
+    if (!voiceMeshSupportsDevices(prev)) {
+      if (prev) prev.teardown()
+      voiceRef.current = new VoiceMesh({
+        send: (msg) => sendRef.current(msg),
+        iceServers: () => iceRef.current,
+        onLocalMuteChange: (muted, forceMuted) => {
+          setVoiceMuted(muted)
+          setVoiceForceMuted(forceMuted)
+        },
+        onSpeakingChange: (ids) => setSpeakingIds(ids),
+      })
+    }
   }
 
   const screenRef = useRef<ScreenShareSession | null>(null)
@@ -174,7 +227,6 @@ export function SalaPage() {
     if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
       setDisplayName(res.data.displayName)
       setActive(true)
-      // welcome no WS confirma admitido vs fila (ask)
       setAdmitPending((meta.data.joinMode || res.data.joinMode) === 'ask')
       setBooting(false)
       return
@@ -356,6 +408,7 @@ export function SalaPage() {
       return
     }
     if (msg.type === 'voice_ice') {
+      if (admitPendingRef.current) return
       await voiceRef.current?.handleIce(msg.from, msg.candidate)
       return
     }
@@ -369,6 +422,19 @@ export function SalaPage() {
     }
     if (msg.type === 'chat') {
       setChatFeed((prev) => appendMessage(prev, msg.message))
+      const mine =
+        Boolean(deviceId && msg.message.authorDeviceId === deviceId) ||
+        msg.message.authorName === (profileName || displayName)
+      if (!mine && sideRef.current !== 'chat') {
+        toast.message(msg.message.authorName, {
+          id: `chat-${msg.message.id}`,
+          description: msg.message.body,
+          action: {
+            label: 'Abrir',
+            onClick: () => setSide('chat'),
+          },
+        })
+      }
       return
     }
     if (msg.type === 'room_updated') {
@@ -399,6 +465,7 @@ export function SalaPage() {
     setCanShareScreen(false)
     setLocalSharing(false)
     setWaiting(true)
+    setSide('closed')
   }
 
   async function toggleSelfMute() {
@@ -451,6 +518,38 @@ export function SalaPage() {
     setActive(false)
     setAdmitPending(false)
     await api('/api/logout', { method: 'POST' })
+  }
+
+  function toggleSide(next: Exclude<SidePanel, 'closed'>) {
+    setSide((cur) => (cur === next ? 'closed' : next))
+  }
+
+  function onSideResizePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = sideWidthRef.current
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+
+    function onMove(ev: PointerEvent) {
+      const next = Math.min(SIDE_MAX, Math.max(SIDE_MIN, startW + (startX - ev.clientX)))
+      sideWidthRef.current = next
+      setSideWidth(next)
+    }
+
+    function onUp(ev: PointerEvent) {
+      el.releasePointerCapture(ev.pointerId)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      try {
+        localStorage.setItem(SIDE_WIDTH_KEY, String(sideWidthRef.current))
+      } catch {
+        /* ignore */
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
   }
 
   if (booting) {
@@ -538,89 +637,264 @@ export function SalaPage() {
       })),
   ]
   const slotBusy = locals.size + remotes.size >= MAX_SLOTS
+  const selfName = profileName || displayName
+  const selfSpeaking = speakingIds.includes(selfPeerId) && !voiceMuted
+  const sideOpen = side !== 'closed'
 
   return (
-    <ChatSplit
-      chat={
-        <RoomChat
-          items={chatFeed}
-          selfName={profileName || displayName}
-          selfDeviceId={deviceId}
-          onSend={(body) => sendRef.current({ type: 'chat', body })}
-        />
-      }
+    <div
+      className="relative flex h-full min-h-0 flex-col bg-background"
+      onPointerDownCapture={() => resumeMediaPlayback()}
     >
-      <div
-        className="flex h-full min-h-0 flex-col bg-black"
-        onPointerDownCapture={() => resumeMediaPlayback()}
-      >
-        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-card/90 px-4 py-3 backdrop-blur">
-          <div className="min-w-0">
-            <b className="font-medium">Sala {room}</b>
-            {voiceEnabled ? (
-              <SpeakingHint
-                speakingIds={speakingIds}
-                selfPeerId={selfPeerId}
-                selfMuted={voiceMuted}
-                roster={roster}
-              />
-            ) : null}
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-3 px-3 py-2.5 sm:px-4">
+        <div className="min-w-0 rounded-md bg-background/80 px-2.5 py-1.5 backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            <h1 className="truncate font-mono text-sm font-medium">{room}</h1>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {canShareScreen ? (
-              localSharing ? (
-                <Button type="button" variant="outline" size="sm" onClick={() => stopSharing()}>
-                  Parar tela
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={slotBusy}
-                  onClick={() => void shareScreen()}
-                >
-                  Compartilhar tela
-                </Button>
-              )
-            ) : null}
-            {voiceEnabled ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={voiceForceMuted}
+          {voiceEnabled ? (
+            <SpeakingHint
+              speakingIds={speakingIds}
+              selfPeerId={selfPeerId}
+              selfMuted={voiceMuted}
+              roster={roster}
+            />
+          ) : (
+            <p className="truncate text-xs text-muted-foreground">{selfName}</p>
+          )}
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1 bg-black">
+          <div className="absolute inset-0 pt-14 pb-24 sm:pb-28">
+            <StageBoard
+              items={stageItems}
+              empty={
+                <div className="flex flex-col items-center justify-center gap-2 px-6 text-center">
+                  <MonitorUp className="size-10 text-white/25" />
+                  <p className="text-sm text-white/60">
+                    {waiting ? 'Aguardando transmissão…' : 'Nada no ar'}
+                  </p>
+                </div>
+              }
+            />
+          </div>
+
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-4 sm:pb-5">
+            <div className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-2 py-2 shadow-lg backdrop-blur-sm sm:gap-2 sm:px-3">
+              {voiceEnabled ? (
+                <ControlButton
+                  label={
+                    voiceForceMuted
+                      ? 'Mic bloqueado'
+                      : voiceMuted
+                        ? 'Ativar mic'
+                        : selfSpeaking
+                          ? 'Falando'
+                          : 'Mutar mic'
+                  }
+                  active={!voiceMuted && !voiceForceMuted}
+                  disabled={voiceForceMuted || action.busy}
                   onClick={() => void toggleSelfMute()}
                 >
-                  {voiceMuted ? 'Ativar mic' : 'Mutar mic'}
-                </Button>
-                {voiceForceMuted ? (
-                  <span className="text-xs text-muted-foreground">Mic bloqueado pelo host</span>
-                ) : speakingIds.includes(selfPeerId) && !voiceMuted ? (
-                  <span className="text-xs text-muted-foreground">Falando…</span>
-                ) : null}
-              </>
-            ) : null}
-            <Button type="button" variant="outline" size="sm" onClick={() => void leave()}>
-              Sair
-            </Button>
+                  {voiceMuted || voiceForceMuted ? (
+                    <MicOff className="size-5" />
+                  ) : (
+                    <Mic className="size-5" />
+                  )}
+                </ControlButton>
+              ) : null}
+
+              {canShareScreen ? (
+                <ControlButton
+                  label={localSharing ? 'Parar tela' : 'Compartilhar tela'}
+                  active={localSharing}
+                  disabled={!localSharing && (slotBusy || action.busy)}
+                  onClick={() => {
+                    if (localSharing) stopSharing()
+                    else void shareScreen()
+                  }}
+                >
+                  {localSharing ? (
+                    <ScreenShareOff className="size-5" />
+                  ) : (
+                    <ScreenShare className="size-5" />
+                  )}
+                </ControlButton>
+              ) : null}
+
+              {voiceEnabled || canShareScreen ? <IslandDivider /> : null}
+
+              <ControlButton
+                label="Pessoas"
+                active={side === 'people'}
+                onClick={() => toggleSide('people')}
+              >
+                <Users className="size-5" />
+              </ControlButton>
+
+              <ControlButton
+                label="Mensagens"
+                active={side === 'chat'}
+                onClick={() => toggleSide('chat')}
+              >
+                <MessageSquare className="size-5" />
+              </ControlButton>
+
+              <ControlButton
+                label="Áudio"
+                active={side === 'audio'}
+                onClick={() => toggleSide('audio')}
+              >
+                <Headphones className="size-5" />
+              </ControlButton>
+
+              <IslandDivider />
+
+              <ControlButton label="Sair" danger onClick={() => void leave()}>
+                <PhoneOff className="size-5" />
+              </ControlButton>
+            </div>
           </div>
-        </header>
-        <div className="min-h-0 flex-1">
-          <StageBoard
-            items={stageItems}
-            empty={
-              <div className="flex flex-col items-center justify-center gap-2 px-6 text-center">
-                <MonitorUp className="size-10 text-white/25" />
-                <p className="text-sm text-white/60">
-                  {waiting ? 'Aguardando transmissão…' : 'Nada no ar'}
-                </p>
-              </div>
-            }
-          />
         </div>
+
+        {sideOpen ? (
+          <>
+            <button
+              type="button"
+              aria-label="Fechar painel"
+              className="absolute inset-0 z-30 bg-black/40 md:hidden"
+              onClick={() => setSide('closed')}
+            />
+            <aside
+              className={cn(
+                'relative z-40 flex shrink-0 flex-col border-l border-border bg-card',
+                'max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:w-full max-md:max-w-sm',
+                'md:w-[var(--viewer-side-w)]',
+              )}
+              style={{ ['--viewer-side-w' as string]: `${sideWidth}px` }}
+            >
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Redimensionar painel"
+                onPointerDown={onSideResizePointerDown}
+                className={cn(
+                  'absolute inset-y-0 -left-1 z-50 hidden w-3 cursor-col-resize touch-none md:block',
+                  'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border',
+                  'hover:after:bg-primary/60 active:after:w-0.5 active:after:bg-primary',
+                )}
+              >
+                <div className="absolute top-1/2 left-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-border" />
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+                {(
+                  [
+                    ['people', 'Pessoas', Users],
+                    ['chat', 'Chat', MessageSquare],
+                    ['audio', 'Áudio', Headphones],
+                  ] as const
+                ).map(([id, label, Icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setSide(id)}
+                    className={cn(
+                      'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
+                      side === id
+                        ? 'bg-muted text-foreground'
+                        : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="size-3.5" />
+                    {label}
+                  </button>
+                ))}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  aria-label="Fechar"
+                  onClick={() => setSide('closed')}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+
+              {side === 'people' ? (
+                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+                  <p className="mb-2 text-xs font-medium text-muted-foreground">
+                    Na sala · {roster.length}
+                  </p>
+                  {!roster.length ? (
+                    <p className="px-1.5 py-2 text-xs text-muted-foreground">Ninguém na sala.</p>
+                  ) : (
+                    <ul className="space-y-0.5">
+                      {roster.map((m) => {
+                        const talking = speakingIds.includes(m.peerId)
+                        const isSelf = m.peerId === selfPeerId
+                        return (
+                          <li
+                            key={m.peerId}
+                            className="flex items-center gap-2.5 rounded-md px-1.5 py-2"
+                          >
+                            <div className="relative shrink-0">
+                              <Avatar size="sm">
+                                <AvatarFallback>{initials(m.displayName)}</AvatarFallback>
+                              </Avatar>
+                              {talking && !(isSelf && voiceMuted) ? (
+                                <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full bg-emerald-500 ring-2 ring-card" />
+                              ) : null}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm">
+                                {m.displayName}
+                                {isSelf ? (
+                                  <span className="text-muted-foreground"> (você)</span>
+                                ) : null}
+                              </p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {m.role === 'host'
+                                  ? 'Host'
+                                  : talking
+                                    ? 'Falando'
+                                    : voiceEnabled
+                                      ? 'Na sala'
+                                      : 'Espectador'}
+                              </p>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+
+              {side === 'chat' ? (
+                <div className="min-h-0 flex-1">
+                  <RoomChat
+                    items={chatFeed}
+                    selfName={selfName}
+                    selfDeviceId={deviceId}
+                    onSend={(body) => sendRef.current({ type: 'chat', body })}
+                  />
+                </div>
+              ) : null}
+
+              {side === 'audio' ? (
+                <AudioSettingsPanel
+                  voice={voiceRef.current}
+                  voiceEnabled={voiceEnabled}
+                  onError={(message) => action.fail(message)}
+                />
+              ) : null}
+            </aside>
+          </>
+        ) : null}
       </div>
-    </ChatSplit>
+    </div>
   )
 }

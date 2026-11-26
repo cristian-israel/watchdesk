@@ -1,3 +1,4 @@
+import { readAudioInputId, readAudioOutputId } from '@/lib/media-devices'
 import type { SignalOutbound, VoicePeerState } from '@/lib/signal'
 import { isSpeaking, rmsFromTimeDomain } from '@/lib/speaking'
 
@@ -29,6 +30,15 @@ type LocalAnalyser = {
 
 const POLL_MS = 80
 
+/** True se a instância tem API atual (evita ref velha após HMR). */
+export function voiceMeshSupportsDevices(voice: unknown): boolean {
+  return Boolean(
+    voice &&
+      typeof voice === 'object' &&
+      typeof (voice as VoiceMesh).setInputDevice === 'function',
+  )
+}
+
 /**
  * Mesh P2P de áudio. O peer com peerId lexicograficamente menor cria o offer.
  */
@@ -44,11 +54,23 @@ export class VoiceMesh {
   private localAnalyser: LocalAnalyser | null = null
   private pollTimer: number | undefined
   private lastSpeakingKey = ''
+  private inputDeviceId = ''
+  private outputDeviceId = ''
   private readonly opts: VoiceMeshOptions
   private readonly levelBuf = new Uint8Array(256)
 
   constructor(opts: VoiceMeshOptions) {
     this.opts = opts
+    this.inputDeviceId = readAudioInputId()
+    this.outputDeviceId = readAudioOutputId()
+  }
+
+  getInputDeviceId() {
+    return this.inputDeviceId
+  }
+
+  getOutputDeviceId() {
+    return this.outputDeviceId
   }
 
   get isMuted() {
@@ -128,6 +150,21 @@ export class VoiceMesh {
     void this.audioCtx?.resume().catch(() => {
       /* ok */
     })
+  }
+
+  /** Preferência de mic; se a voz já estiver ligada, troca a track ao vivo. */
+  async setInputDevice(deviceId: string) {
+    const next = deviceId || ''
+    if (this.inputDeviceId === next && this.localStream) return
+    this.inputDeviceId = next
+    if (!this.enabled) return
+    await this.replaceLocalStream()
+  }
+
+  /** Preferência de saída; aplica setSinkId em todos os áudios remotos. */
+  async setOutputDevice(deviceId: string) {
+    this.outputDeviceId = deviceId || ''
+    await this.applyOutputSinkToAll()
   }
 
   async handleOffer(from: string, sdp: string) {
@@ -290,15 +327,33 @@ export class VoiceMesh {
     if (track) track.enabled = !this.muted && !this.forceMuted
   }
 
-  private async ensureLocalStream() {
-    if (this.localStream) return this.localStream
+  private audioConstraints(): MediaTrackConstraints | true {
+    if (!this.inputDeviceId) return true
+    return { deviceId: { exact: this.inputDeviceId } }
+  }
+
+  private async acquireMicStream() {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('Este endereço não permite microfone. Use localhost ou HTTPS.')
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: false,
-    })
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: this.audioConstraints(),
+        video: false,
+      })
+    } catch (err) {
+      // deviceId sumiu / inválido — cai no default
+      if (this.inputDeviceId) {
+        this.inputDeviceId = ''
+        return navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      }
+      throw err
+    }
+  }
+
+  private async ensureLocalStream() {
+    if (this.localStream) return this.localStream
+    const stream = await this.acquireMicStream()
     const track = stream.getAudioTracks()[0]
     if (track) track.enabled = false
     this.localStream = stream
@@ -312,6 +367,62 @@ export class VoiceMesh {
       }
     }
     return stream
+  }
+
+  private async replaceLocalStream() {
+    const stream = await this.acquireMicStream()
+    const newTrack = stream.getAudioTracks()[0]
+    if (!newTrack) {
+      for (const t of stream.getTracks()) t.stop()
+      throw new Error('Microfone indisponível.')
+    }
+    newTrack.enabled = !this.muted && !this.forceMuted
+
+    const prev = this.localStream
+    this.localStream = stream
+    this.attachLocalAnalyser(stream)
+
+    for (const { pc } of this.peers.values()) {
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'audio')
+      if (sender) {
+        try {
+          await sender.replaceTrack(newTrack)
+        } catch {
+          try {
+            pc.addTrack(newTrack, stream)
+          } catch {
+            /* ok */
+          }
+        }
+      } else {
+        try {
+          pc.addTrack(newTrack, stream)
+        } catch {
+          /* ok */
+        }
+      }
+    }
+
+    if (prev) {
+      for (const t of prev.getTracks()) t.stop()
+    }
+  }
+
+  private async applyOutputSink(audio: HTMLAudioElement) {
+    const sinkId = this.outputDeviceId
+    const el = audio as HTMLAudioElement & {
+      setSinkId?: (id: string) => Promise<void>
+    }
+    if (typeof el.setSinkId !== 'function') return
+    try {
+      await el.setSinkId(sinkId)
+    } catch {
+      /* device inválido — mantém default */
+    }
+  }
+
+  private async applyOutputSinkToAll() {
+    await Promise.all([...this.peers.values()].map((p) => this.applyOutputSink(p.audio)))
   }
 
   private teardownMedia() {
@@ -367,6 +478,7 @@ export class VoiceMesh {
     audio.autoplay = true
     audio.setAttribute('playsinline', 'true')
     document.body.appendChild(audio)
+    void this.applyOutputSink(audio)
 
     const entry: PeerLink = {
       pc,

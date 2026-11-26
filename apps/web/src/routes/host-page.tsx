@@ -1,7 +1,6 @@
 import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   useEffect,
   useRef,
   useState,
@@ -9,6 +8,7 @@ import {
 import {
   Check,
   Copy,
+  Headphones,
   Link2,
   LogOut,
   MessageSquare,
@@ -26,6 +26,8 @@ import {
 import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
+import { AudioSettingsPanel } from '@/components/audio-settings-panel'
+import { ControlButton, IslandDivider } from '@/components/control-button'
 import { RoomChat } from '@/components/room-chat'
 import { StageBoard, type StageItem } from '@/components/stage-board'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -47,7 +49,7 @@ import { viewerInviteUrl } from '@/lib/room'
 import { useProfile } from '@/shell/profile'
 import { useSignal } from '@/lib/use-signal'
 import { MAX_SLOTS, ScreenShareSession, normalizeSlots } from '@/lib/screen-share'
-import { VoiceMesh } from '@/lib/voice-mesh'
+import { VoiceMesh, voiceMeshSupportsDevices } from '@/lib/voice-mesh'
 import {
   type PendingMember,
   type RosterMember,
@@ -67,7 +69,7 @@ type RemoteShare = {
   stream: MediaStream
 }
 
-type SidePanel = 'closed' | 'people' | 'chat' | 'settings'
+type SidePanel = 'closed' | 'people' | 'chat' | 'audio' | 'settings'
 
 const SIDE_MIN = 260
 const SIDE_MAX = 560
@@ -89,42 +91,6 @@ function initials(name: string) {
   if (!parts.length) return '?'
   if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
   return `${parts[0]![0] || ''}${parts[1]![0] || ''}`.toUpperCase()
-}
-
-function ControlButton({
-  label,
-  active,
-  danger,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string
-  active?: boolean
-  danger?: boolean
-  disabled?: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        'flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-40',
-        danger
-          ? 'bg-destructive text-white hover:bg-destructive/90'
-          : active
-            ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-            : 'bg-muted text-foreground hover:bg-muted/80',
-      )}
-    >
-      {children}
-    </button>
-  )
 }
 
 export function HostPage() {
@@ -175,17 +141,21 @@ export function HostPage() {
   const viewersRef = useRef(new Map<string, string>())
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
   const voiceRef = useRef<VoiceMesh | null>(null)
-  if (!voiceRef.current) {
-    voiceRef.current = new VoiceMesh({
-      send: (msg) => sendRef.current(msg),
-      iceServers: () => iceRef.current,
-      onLocalMuteChange: (muted, forceMuted) => {
-        setVoiceMuted(muted)
-        setVoiceForceMuted(forceMuted)
-      },
-      onPeersChange: (peers) => setVoicePeers(peers),
-      onSpeakingChange: (ids) => setSpeakingIds(ids),
-    })
+  {
+    const prev = voiceRef.current
+    if (!voiceMeshSupportsDevices(prev)) {
+      if (prev) prev.teardown()
+      voiceRef.current = new VoiceMesh({
+        send: (msg) => sendRef.current(msg),
+        iceServers: () => iceRef.current,
+        onLocalMuteChange: (muted, forceMuted) => {
+          setVoiceMuted(muted)
+          setVoiceForceMuted(forceMuted)
+        },
+        onPeersChange: (peers) => setVoicePeers(peers),
+        onSpeakingChange: (ids) => setSpeakingIds(ids),
+      })
+    }
   }
 
   const screenRef = useRef<ScreenShareSession | null>(null)
@@ -732,7 +702,7 @@ export function HostPage() {
 
           {/* Bottom controls */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-4 sm:pb-5">
-            <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-card/95 px-2 py-2 shadow-lg backdrop-blur-sm sm:gap-2.5 sm:px-3">
+            <div className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-2 py-2 shadow-lg backdrop-blur-sm sm:gap-2 sm:px-3">
               {voiceEnabled ? (
                 <ControlButton
                   label={
@@ -778,6 +748,8 @@ export function HostPage() {
                 <ScreenShare className="size-5" />
               </ControlButton>
 
+              <IslandDivider />
+
               <ControlButton
                 label="Pessoas"
                 active={side === 'people'}
@@ -800,12 +772,22 @@ export function HostPage() {
               </ControlButton>
 
               <ControlButton
+                label="Áudio"
+                active={side === 'audio'}
+                onClick={() => toggleSide('audio')}
+              >
+                <Headphones className="size-5" />
+              </ControlButton>
+
+              <ControlButton
                 label="Sala"
                 active={side === 'settings'}
                 onClick={() => toggleSide('settings')}
               >
                 <Settings2 className="size-5" />
               </ControlButton>
+
+              <IslandDivider />
 
               <ControlButton label="Sair" danger onClick={() => void logout()}>
                 <PhoneOff className="size-5" />
@@ -852,6 +834,7 @@ export function HostPage() {
                   [
                     ['people', 'Pessoas', Users],
                     ['chat', 'Chat', MessageSquare],
+                    ['audio', 'Áudio', Headphones],
                     ['settings', 'Sala', Settings2],
                   ] as const
                 ).map(([id, label, Icon]) => (
@@ -1073,6 +1056,14 @@ export function HostPage() {
                     onSend={(body) => sendRef.current({ type: 'chat', body })}
                   />
                 </div>
+              ) : null}
+
+              {side === 'audio' ? (
+                <AudioSettingsPanel
+                  voice={voiceRef.current}
+                  voiceEnabled={voiceEnabled}
+                  onError={(message) => action.fail(message)}
+                />
               ) : null}
 
               {side === 'settings' ? (
