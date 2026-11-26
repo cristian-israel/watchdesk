@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react'
-import { Check, LogIn, LogOut, Pencil } from 'lucide-react'
+import { Check, LogOut, Pencil } from 'lucide-react'
 import { useActionDialog } from '@/actions/action-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,7 +7,7 @@ import { useProfile } from './profile'
 
 export function NomeAparelho() {
   const action = useActionDialog()
-  const { displayName, user, saveName, logout, exitGuest, enterLogin } = useProfile()
+  const { displayName, user, saveName, logout, exitGuest } = useProfile()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(displayName)
 
@@ -66,50 +66,25 @@ export function NomeAparelho() {
         <Button type="button" size="icon" variant="ghost" aria-label="Renomear" onClick={() => setEditing(true)}>
           <Pencil />
         </Button>
-        {user ? (
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            aria-label="Sair"
-            onClick={() => void logout()}
-          >
-            <LogOut />
-          </Button>
-        ) : (
-          <>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              aria-label="Entrar"
-              disabled={action.busy}
-              onClick={() =>
-                void action.run({ pending: 'Abrindo login…', success: 'Pronto' }, async () => {
-                  const message = await enterLogin()
-                  if (message) throw new Error(message)
-                })
-              }
-            >
-              <LogIn />
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              aria-label="Sair"
-              disabled={action.busy}
-              onClick={() =>
-                void action.run({ pending: 'Saindo…', success: 'Até logo' }, async () => {
-                  const message = await exitGuest()
-                  if (message) throw new Error(message)
-                })
-              }
-            >
-              <LogOut />
-            </Button>
-          </>
-        )}
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label="Sair"
+          disabled={action.busy}
+          onClick={() => {
+            if (user) {
+              void logout()
+              return
+            }
+            void action.run({ pending: 'Saindo…', success: 'Até logo' }, async () => {
+              const message = await exitGuest()
+              if (message) throw new Error(message)
+            })
+          }}
+        >
+          <LogOut />
+        </Button>
       </div>
     </div>
   )

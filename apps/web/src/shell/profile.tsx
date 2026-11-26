@@ -24,7 +24,6 @@ type ProfileValue = {
   login: (login: string, password: string) => Promise<string | null>
   logout: () => Promise<void>
   exitGuest: () => Promise<string | null>
-  enterLogin: () => Promise<string | null>
 }
 
 const emptyMe: Me = {
