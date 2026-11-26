@@ -1,20 +1,20 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import {
   Check,
   Copy,
   Link2,
   LogOut,
+  MessageSquare,
   Mic,
   MicOff,
   MonitorUp,
-  PanelRightClose,
-  PanelRightOpen,
+  PhoneOff,
   ScreenShare,
   ScreenShareOff,
   Settings2,
   Users,
+  X,
 } from 'lucide-react'
-import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
@@ -24,7 +24,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { api, apiOrThrow, type JoinMode, type SessionInfo } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
@@ -60,6 +59,8 @@ type RemoteTile = {
   tile: HTMLDivElement
 }
 
+type SidePanel = 'closed' | 'people' | 'chat' | 'settings'
+
 function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (!parts.length) return '?'
@@ -67,26 +68,90 @@ function initials(name: string) {
   return `${parts[0]![0] || ''}${parts[1]![0] || ''}`.toUpperCase()
 }
 
-function Pill({
-  children,
-  tone = 'muted',
+function LocalShareTile({
+  slot,
+  stream,
+  state,
+  onStop,
 }: {
-  children: import('react').ReactNode
-  tone?: 'muted' | 'success' | 'warning' | 'live'
+  slot: number
+  stream: MediaStream
+  state: ShareEntry['state']
+  onStop: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+    el.srcObject = stream
+    el.muted = true
+    void el.play().catch(() => {
+      /* autoplay */
+    })
+  }, [stream])
+
+  return (
+    <div className="relative overflow-hidden rounded-lg bg-black">
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        className="block aspect-video w-full bg-black object-contain"
+      />
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-linear-to-t from-black/70 to-transparent px-2.5 py-2">
+        <span className="truncate text-xs text-white">
+          Você · Tela {slot + 1}
+          {state !== 'live' ? ' · conectando…' : ''}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-7 shrink-0 bg-white/15 text-white hover:bg-white/25"
+          onClick={onStop}
+        >
+          Parar
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ControlButton({
+  label,
+  active,
+  danger,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string
+  active?: boolean
+  danger?: boolean
+  disabled?: boolean
+  onClick: () => void
+  children: ReactNode
 }) {
   return (
-    <span
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-        tone === 'muted' && 'bg-muted text-muted-foreground',
-        tone === 'success' && 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
-        tone === 'warning' && 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
-        tone === 'live' && 'bg-primary/15 text-primary',
+        'flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-40',
+        danger
+          ? 'bg-destructive text-white hover:bg-destructive/90'
+          : active
+            ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+            : 'bg-muted text-foreground hover:bg-muted/80',
       )}
     >
-      {tone === 'live' ? <span className="size-1.5 animate-pulse rounded-full bg-primary" /> : null}
       {children}
-    </span>
+    </button>
   )
 }
 
@@ -118,10 +183,7 @@ export function HostPage() {
   const [localShareCount, setLocalShareCount] = useState(0)
   const [remoteShareCount, setRemoteShareCount] = useState(0)
   const [linkCopied, setLinkCopied] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
-  const [chatMinimized, setChatMinimized] = useState(false)
-  const chatPanelRef = usePanelRef()
-  const chatPersistTimer = useRef<number | undefined>(undefined)
+  const [side, setSide] = useState<SidePanel>('closed')
 
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
@@ -169,11 +231,10 @@ export function HostPage() {
     let entry = remoteTilesRef.current.get(info.slot)
     if (!entry) {
       const tile = document.createElement('div')
-      tile.className =
-        'relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
+      tile.className = 'relative overflow-hidden rounded-lg bg-black'
       tile.innerHTML =
         '<video autoplay playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
-        '<span class="tag absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-xs text-white"></span>'
+        '<span class="tag absolute bottom-2 left-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white"></span>'
       const video = tile.querySelector('video') as HTMLVideoElement
       grid.appendChild(tile)
       entry = { info, video, tile }
@@ -334,7 +395,6 @@ export function HostPage() {
     if (msg.type === 'slots') {
       const slots = normalizeSlots(msg.slots)
       screenRef.current?.applySlots(slots)
-      // Drop local share UI entries removed by server
       setShares((prev) => {
         const next = new Map(prev)
         for (const slot of [...next.keys()]) {
@@ -539,6 +599,10 @@ export function HostPage() {
     }
   }
 
+  function toggleSide(next: Exclude<SidePanel, 'closed'>) {
+    setSide((cur) => (cur === next ? 'closed' : next))
+  }
+
   if (booting) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-4 text-sm text-muted-foreground">
@@ -573,476 +637,399 @@ export function HostPage() {
   const hostName = profileName || displayName
   const selfSpeaking = speakingIds.includes(selfPeerId) && !voiceMuted
   const slotBudget = shares.size >= MAX_SLOTS
+  const stageEmpty = !sorted.length && !remoteShareCount
+  const sideOpen = side !== 'closed'
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="truncate font-mono text-sm font-semibold tracking-tight">{room}</h1>
-            <Pill tone={active ? 'live' : 'warning'}>{active ? 'Ao vivo' : 'Pausada'}</Pill>
-            <Pill>{joinMode === 'open' ? 'Pública' : 'Com aceite'}</Pill>
-            {voiceEnabled ? <Pill tone="success">Voz</Pill> : null}
+    <div className="relative flex h-full min-h-0 flex-col bg-background">
+      {/* Top strip */}
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-3 px-3 py-2.5 sm:px-4">
+        <div className="min-w-0 rounded-md bg-background/80 px-2.5 py-1.5 backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            <h1 className="truncate font-mono text-sm font-medium">{room}</h1>
+            <span
+              className={cn(
+                'size-1.5 shrink-0 rounded-full',
+                active ? 'bg-primary' : 'bg-amber-500',
+              )}
+            />
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              {active ? 'Ao vivo' : 'Pausada'}
+            </span>
           </div>
           <p className="truncate text-xs text-muted-foreground">
             {hostName} · {viewers.length}/{maxViewers}
             {localShareCount ? ` · ${localShareCount} tela(s)` : ''}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1.5">
+          {pending.length ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="gap-1.5"
+              onClick={() => setSide('people')}
+            >
+              <Users className="size-3.5" />
+              {pending.length} pedido{pending.length > 1 ? 's' : ''}
+            </Button>
+          ) : null}
           <Button
             type="button"
-            variant="outline"
             size="sm"
+            variant="outline"
+            className="gap-1.5 bg-background/80 backdrop-blur-sm"
             onClick={() => void copy(link)}
-            className="gap-1.5"
           >
             {linkCopied ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
-            {linkCopied ? 'Copiado' : 'Convite'}
-          </Button>
-          <Button
-            type="button"
-            variant={showSettings ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setShowSettings((v) => !v)}
-            className="gap-1.5"
-          >
-            <Settings2 className="size-3.5" />
-            Sala
-          </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={() => void logout()}>
-            <LogOut className="size-3.5" />
+            <span className="hidden sm:inline">{linkCopied ? 'Copiado' : 'Convite'}</span>
           </Button>
         </div>
       </header>
 
-      {showSettings ? (
-        <div className="shrink-0 border-b border-border bg-muted/30 px-3 py-2.5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void patchRoom(
-                    { active: !active },
-                    {
-                      pending: active ? 'Desativando…' : 'Reativando…',
-                      success: active ? 'Sala desativada' : 'Sala reativada',
-                    },
-                  )
-                }
-              >
-                {active ? 'Desativar' : 'Reativar'}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void patchRoom(
-                    { joinMode: joinMode === 'ask' ? 'open' : 'ask' },
-                    {
-                      pending: 'Atualizando…',
-                      success: joinMode === 'ask' ? 'Sala pública' : 'Entrada com aceite',
-                    },
-                  )
-                }
-              >
-                {joinMode === 'ask' ? 'Pública' : 'Com aceite'}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  void patchRoom(
-                    { voiceEnabled: !voiceEnabled },
-                    {
-                      pending: 'Atualizando…',
-                      success: voiceEnabled ? 'Voz desligada' : 'Voz ligada',
-                    },
-                  )
-                }
-              >
-                {voiceEnabled ? 'Desligar voz' : 'Ligar voz'}
-              </Button>
-            </div>
-            <form
-              className="flex flex-wrap items-end gap-2"
-              onSubmit={(e: FormEvent) => {
-                e.preventDefault()
-                void patchRoom(
-                  { maxViewers: newMax },
-                  { pending: 'Salvando…', success: 'Limite atualizado' },
-                )
-              }}
-            >
-              <div className="space-y-1">
-                <Label htmlFor="max" className="text-xs">
-                  Máx.
-                </Label>
-                <Input
-                  id="max"
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={newMax}
-                  onChange={(e) => setNewMax(Number(e.target.value))}
-                  className="h-8 w-16"
-                />
+      <div className="flex min-h-0 flex-1">
+        {/* Stage */}
+        <div className="relative min-h-0 min-w-0 flex-1 bg-black">
+          <div className="absolute inset-0 overflow-y-auto px-3 pt-16 pb-28 sm:px-5">
+            {stageEmpty ? (
+              <div className="flex h-full min-h-56 flex-col items-center justify-center gap-2 text-center">
+                <MonitorUp className="size-10 text-white/25" />
+                <p className="text-sm text-white/60">Nada no ar</p>
+                <p className="max-w-xs text-xs text-white/40">
+                  Compartilhe a tela ou libere um espectador em Pessoas.
+                </p>
               </div>
-              <Button type="submit" size="sm" variant="outline">
-                Salvar
-              </Button>
-            </form>
-          </div>
-        </div>
-      ) : null}
-
-      {/* IDE: Stage | People | Chat — painéis sempre montados; resize sem setState no drag */}
-      <div className="min-h-0 flex-1">
-        <ResizablePanelGroup orientation="horizontal" className="h-full min-h-0">
-          <ResizablePanel id="host-stage" defaultSize="55%" minSize="28%" className="min-h-0">
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-muted/20 px-3 py-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={slotBudget || action.busy}
-                  onClick={() => void shareScreen()}
-                  className="gap-1.5"
-                >
-                  <MonitorUp className="size-3.5" />
-                  Compartilhar
-                </Button>
-                {voiceEnabled ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={voiceMuted ? 'outline' : 'default'}
-                    disabled={voiceForceMuted || action.busy}
-                    onClick={() => void toggleSelfMute()}
-                    className="gap-1.5"
-                  >
-                    {voiceMuted ? <MicOff className="size-3.5" /> : <Mic className="size-3.5" />}
-                    {voiceForceMuted
-                      ? 'Bloqueado'
-                      : voiceMuted
-                        ? 'Mic'
-                        : selfSpeaking
-                          ? 'Falando'
-                          : 'Mutar'}
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      void patchRoom(
-                        { voiceEnabled: true },
-                        { pending: 'Ativando…', success: 'Voz ligada' },
-                      )
-                    }
-                    className="gap-1.5"
-                  >
-                    <Mic className="size-3.5" />
-                    Ligar voz
-                  </Button>
-                )}
-              </div>
-
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            ) : (
+              <div className="mx-auto flex w-full max-w-6xl flex-col gap-3">
                 {sorted.length ? (
-                  <ul className="flex flex-col gap-2">
-                    {sorted.map(([slot, e]) => (
-                      <li
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3">
+                    {sorted.map(([slot, entry]) => (
+                      <LocalShareTile
                         key={slot}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-3 py-2"
-                      >
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                            <MonitorUp className="size-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">Tela {slot + 1}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {e.state === 'live' ? 'No ar' : 'Conectando…'} · você
-                            </p>
-                          </div>
-                        </div>
-                        <Button type="button" variant="outline" size="sm" onClick={() => stopSlot(slot)}>
-                          Parar
-                        </Button>
-                      </li>
+                        slot={slot}
+                        stream={entry.stream}
+                        state={entry.state}
+                        onStop={() => stopSlot(slot)}
+                      />
                     ))}
-                  </ul>
+                  </div>
                 ) : null}
-
                 <div
                   ref={remoteGridRef}
-                  className="grid content-start gap-3 empty:hidden [grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))]"
+                  className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3 empty:hidden"
                 />
-
-                {!sorted.length && !remoteShareCount ? (
-                  <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/15 px-6 text-center">
-                    <ScreenShare className="size-8 text-muted-foreground/70" />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">Palco vazio</p>
-                      <p className="max-w-sm text-xs text-muted-foreground">
-                        Compartilhe uma tela ou libere um espectador na coluna Pessoas.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
               </div>
-            </div>
-          </ResizablePanel>
+            )}
+          </div>
 
-          <ResizableHandle withHandle />
-
-          <ResizablePanel
-            id="host-people"
-            defaultSize="20%"
-            minSize="14%"
-            maxSize="36%"
-            className="min-h-0"
-          >
-            <aside className="flex h-full min-h-0 flex-col border-l border-border bg-card">
-              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <Users className="size-3.5 text-muted-foreground" />
-                  <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                    Pessoas
-                  </span>
-                </div>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {viewers.length}/{maxViewers}
-                </span>
-              </div>
-
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-2">
-                {joinMode === 'ask' && pending.length ? (
-                  <div className="space-y-1.5">
-                    <p className="px-1 text-[10px] font-semibold tracking-wide text-amber-600 uppercase dark:text-amber-400">
-                      Pedidos
-                    </p>
-                    {pending.map((p) => (
-                      <div key={p.peerId} className="rounded-lg border border-border p-2">
-                        <div className="mb-2 flex items-center gap-2">
-                          <Avatar size="sm">
-                            <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
-                          </Avatar>
-                          <span className="truncate text-sm">{p.displayName}</span>
-                        </div>
-                        <div className="flex gap-1.5">
-                          <Button
-                            type="button"
-                            size="sm"
-                            className="h-7 flex-1"
-                            onClick={() => admit(p.peerId, true)}
-                          >
-                            Aceitar
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-7 flex-1"
-                            onClick={() => admit(p.peerId, false)}
-                          >
-                            Recusar
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                <ul className="space-y-0.5">
-                  <li className="flex items-center gap-2 rounded-md px-1.5 py-1.5">
-                    <Avatar size="sm">
-                      <AvatarFallback>{initials(hostName)}</AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm">
-                        {hostName}{' '}
-                        <span className="text-muted-foreground">(você)</span>
-                      </p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {voiceEnabled
-                          ? voiceMuted
-                            ? 'Mudo'
-                            : selfSpeaking
-                              ? 'Falando'
-                              : 'Mic ligado'
-                          : 'Host'}
-                      </p>
-                    </div>
-                  </li>
-                  {!viewers.length ? (
-                    <li className="px-1.5 py-2 text-xs text-muted-foreground">
-                      Sala vazia — envie o convite.
-                    </li>
+          {/* Bottom controls */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-4 sm:pb-5">
+            <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-card/95 px-2 py-2 shadow-lg backdrop-blur-sm sm:gap-2.5 sm:px-3">
+              {voiceEnabled ? (
+                <ControlButton
+                  label={
+                    voiceForceMuted
+                      ? 'Mic bloqueado'
+                      : voiceMuted
+                        ? 'Ativar mic'
+                        : selfSpeaking
+                          ? 'Falando'
+                          : 'Mutar mic'
+                  }
+                  active={!voiceMuted && !voiceForceMuted}
+                  disabled={voiceForceMuted || action.busy}
+                  onClick={() => void toggleSelfMute()}
+                >
+                  {voiceMuted || voiceForceMuted ? (
+                    <MicOff className="size-5" />
                   ) : (
-                    viewers.map((v) => {
-                      const vs = voicePeers.find((p) => p.peerId === v.peerId)
-                      const talking = speakingIds.includes(v.peerId)
-                      const canScreen = screenAllowed.has(v.peerId)
-                      return (
-                        <li key={v.peerId} className="rounded-md px-1.5 py-1.5 hover:bg-muted/60">
-                          <div className="flex items-center gap-2">
-                            <div className="relative shrink-0">
-                              <Avatar size="sm">
-                                <AvatarFallback>{initials(v.displayName)}</AvatarFallback>
-                              </Avatar>
-                              {talking && !vs?.muted ? (
-                                <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full bg-emerald-500 ring-2 ring-card" />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm">{v.displayName}</p>
-                              <p className="truncate text-[11px] text-muted-foreground">
-                                {voiceEnabled
-                                  ? vs?.forceMuted
-                                    ? 'Mutado'
-                                    : vs?.muted
-                                      ? 'Mudo'
-                                      : talking
-                                        ? 'Falando'
-                                        : 'Mic ligado'
-                                  : canScreen
-                                    ? 'Pode compartilhar'
-                                    : 'Espectador'}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="mt-1.5 flex flex-wrap gap-1 pl-7">
-                            {voiceEnabled ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-6 gap-1 px-1.5 text-[11px]"
-                                onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
-                              >
-                                {vs?.forceMuted ? (
-                                  <Mic className="size-3" />
-                                ) : (
-                                  <MicOff className="size-3" />
-                                )}
-                                {vs?.forceMuted ? 'Liberar' : 'Mutar'}
-                              </Button>
-                            ) : null}
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-6 gap-1 px-1.5 text-[11px]"
-                              onClick={() => setViewerScreenAllow(v.peerId, !canScreen)}
-                            >
-                              {canScreen ? (
-                                <ScreenShareOff className="size-3" />
-                              ) : (
-                                <ScreenShare className="size-3" />
-                              )}
-                              {canScreen ? 'Revogar' : 'Tela'}
-                            </Button>
-                          </div>
-                        </li>
-                      )
-                    })
+                    <Mic className="size-5" />
                   )}
-                </ul>
-                {viewers.length ? (
-                  <Button
+                </ControlButton>
+              ) : (
+                <ControlButton
+                  label="Ligar voz"
+                  disabled={action.busy}
+                  onClick={() =>
+                    void patchRoom(
+                      { voiceEnabled: true },
+                      { pending: 'Ativando…', success: 'Voz ligada' },
+                    )
+                  }
+                >
+                  <Mic className="size-5" />
+                </ControlButton>
+              )}
+
+              <ControlButton
+                label={localShareCount ? 'Compartilhar outra tela' : 'Compartilhar tela'}
+                active={localShareCount > 0}
+                disabled={slotBudget || action.busy}
+                onClick={() => void shareScreen()}
+              >
+                <ScreenShare className="size-5" />
+              </ControlButton>
+
+              <ControlButton
+                label="Pessoas"
+                active={side === 'people'}
+                onClick={() => toggleSide('people')}
+              >
+                <span className="relative">
+                  <Users className="size-5" />
+                  {pending.length ? (
+                    <span className="absolute -top-1 -right-1 size-2 rounded-full bg-amber-500" />
+                  ) : null}
+                </span>
+              </ControlButton>
+
+              <ControlButton
+                label="Mensagens"
+                active={side === 'chat'}
+                onClick={() => toggleSide('chat')}
+              >
+                <MessageSquare className="size-5" />
+              </ControlButton>
+
+              <ControlButton
+                label="Sala"
+                active={side === 'settings'}
+                onClick={() => toggleSide('settings')}
+              >
+                <Settings2 className="size-5" />
+              </ControlButton>
+
+              <ControlButton label="Sair" danger onClick={() => void logout()}>
+                <PhoneOff className="size-5" />
+              </ControlButton>
+            </div>
+          </div>
+        </div>
+
+        {/* Side panel */}
+        {sideOpen ? (
+          <>
+            <button
+              type="button"
+              aria-label="Fechar painel"
+              className="absolute inset-0 z-30 bg-black/40 md:hidden"
+              onClick={() => setSide('closed')}
+            />
+            <aside
+              className={cn(
+                'z-40 flex w-full max-w-sm shrink-0 flex-col border-l border-border bg-card',
+                'absolute inset-y-0 right-0 md:static md:max-w-[320px]',
+              )}
+            >
+              <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+                {(
+                  [
+                    ['people', 'Pessoas', Users],
+                    ['chat', 'Chat', MessageSquare],
+                    ['settings', 'Sala', Settings2],
+                  ] as const
+                ).map(([id, label, Icon]) => (
+                  <button
+                    key={id}
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-full text-xs text-destructive hover:text-destructive"
-                    onClick={() => void kickAllViewers()}
+                    onClick={() => setSide(id)}
+                    className={cn(
+                      'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
+                      side === id
+                        ? 'bg-muted text-foreground'
+                        : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                    )}
                   >
-                    Remover todos
-                  </Button>
-                ) : null}
-              </div>
-
-              <div className="shrink-0 space-y-1.5 border-t border-border p-2">
-                <Label className="text-[10px] text-muted-foreground">Convite</Label>
-                <div className="flex gap-1.5">
-                  <Input readOnly value={link} className="h-7 font-mono text-[10px]" />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 px-2"
-                    onClick={() => void copy(link)}
-                  >
-                    <Copy className="size-3" />
-                  </Button>
-                </div>
-              </div>
-            </aside>
-          </ResizablePanel>
-
-          <ResizableHandle withHandle />
-
-          <ResizablePanel
-            id="host-chat"
-            panelRef={chatPanelRef}
-            defaultSize="25%"
-            minSize="16%"
-            maxSize="42%"
-            collapsible
-            collapsedSize={44}
-            collapsedThreshold={24}
-            className="min-h-0"
-            onResize={() => {
-              const collapsed = chatPanelRef.current?.isCollapsed() ?? false
-              if (chatPersistTimer.current) window.clearTimeout(chatPersistTimer.current)
-              chatPersistTimer.current = window.setTimeout(() => {
-                setChatMinimized(collapsed)
-              }, 100)
-            }}
-          >
-            {chatMinimized ? (
-              <div className="flex h-full flex-col items-center border-l border-border bg-card py-2">
+                    <Icon className="size-3.5" />
+                    {label}
+                  </button>
+                ))}
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="size-8"
-                  aria-label="Abrir chat"
-                  onClick={() => {
-                    setChatMinimized(false)
-                    chatPanelRef.current?.expand()
-                  }}
+                  className="size-8 shrink-0"
+                  aria-label="Fechar"
+                  onClick={() => setSide('closed')}
                 >
-                  <PanelRightOpen className="size-4" />
+                  <X className="size-4" />
                 </Button>
               </div>
-            ) : (
-              <div className="flex h-full min-h-0 flex-col border-l border-border bg-card/50">
-                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-                  <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                    Mensagens
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label="Minimizar chat"
-                    onClick={() => {
-                      setChatMinimized(true)
-                      chatPanelRef.current?.collapse()
-                    }}
-                  >
-                    <PanelRightClose className="size-3.5" />
-                  </Button>
+
+              {side === 'people' ? (
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+                    {joinMode === 'ask' && pending.length ? (
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">Pedidos</p>
+                        {pending.map((p) => (
+                          <div key={p.peerId} className="rounded-lg border border-border p-2.5">
+                            <div className="mb-2 flex items-center gap-2">
+                              <Avatar size="sm">
+                                <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
+                              </Avatar>
+                              <span className="truncate text-sm">{p.displayName}</span>
+                            </div>
+                            <div className="flex gap-1.5">
+                              <Button
+                                type="button"
+                                size="sm"
+                                className="h-7 flex-1"
+                                onClick={() => admit(p.peerId, true)}
+                              >
+                                Aceitar
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 flex-1"
+                                onClick={() => admit(p.peerId, false)}
+                              >
+                                Recusar
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Na sala · {viewers.length}/{maxViewers}
+                      </p>
+                      <ul className="space-y-0.5">
+                        <li className="flex items-center gap-2.5 rounded-md px-1.5 py-2">
+                          <Avatar size="sm">
+                            <AvatarFallback>{initials(hostName)}</AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm">
+                              {hostName}{' '}
+                              <span className="text-muted-foreground">(você)</span>
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {voiceEnabled
+                                ? voiceMuted
+                                  ? 'Mudo'
+                                  : selfSpeaking
+                                    ? 'Falando'
+                                    : 'Mic ligado'
+                                : 'Host'}
+                            </p>
+                          </div>
+                        </li>
+                        {!viewers.length ? (
+                          <li className="px-1.5 py-2 text-xs text-muted-foreground">
+                            Ninguém na sala. Envie o convite.
+                          </li>
+                        ) : (
+                          viewers.map((v) => {
+                            const vs = voicePeers.find((p) => p.peerId === v.peerId)
+                            const talking = speakingIds.includes(v.peerId)
+                            const canScreen = screenAllowed.has(v.peerId)
+                            return (
+                              <li
+                                key={v.peerId}
+                                className="rounded-md px-1.5 py-2 hover:bg-muted/50"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <div className="relative shrink-0">
+                                    <Avatar size="sm">
+                                      <AvatarFallback>{initials(v.displayName)}</AvatarFallback>
+                                    </Avatar>
+                                    {talking && !vs?.muted ? (
+                                      <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full bg-emerald-500 ring-2 ring-card" />
+                                    ) : null}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm">{v.displayName}</p>
+                                    <p className="truncate text-xs text-muted-foreground">
+                                      {voiceEnabled
+                                        ? vs?.forceMuted
+                                          ? 'Mutado'
+                                          : vs?.muted
+                                            ? 'Mudo'
+                                            : talking
+                                              ? 'Falando'
+                                              : 'Mic ligado'
+                                        : canScreen
+                                          ? 'Pode compartilhar'
+                                          : 'Espectador'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="mt-1.5 flex flex-wrap gap-1 pl-9">
+                                  {voiceEnabled ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 gap-1 px-2 text-xs"
+                                      onClick={() => hostMutePeer(v.peerId, !vs?.forceMuted)}
+                                    >
+                                      {vs?.forceMuted ? (
+                                        <Mic className="size-3" />
+                                      ) : (
+                                        <MicOff className="size-3" />
+                                      )}
+                                      {vs?.forceMuted ? 'Liberar' : 'Mutar'}
+                                    </Button>
+                                  ) : null}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 gap-1 px-2 text-xs"
+                                    onClick={() => setViewerScreenAllow(v.peerId, !canScreen)}
+                                  >
+                                    {canScreen ? (
+                                      <ScreenShareOff className="size-3" />
+                                    ) : (
+                                      <ScreenShare className="size-3" />
+                                    )}
+                                    {canScreen ? 'Revogar' : 'Tela'}
+                                  </Button>
+                                </div>
+                              </li>
+                            )
+                          })
+                        )}
+                      </ul>
+                      {viewers.length ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="mt-1 w-full text-destructive hover:text-destructive"
+                          onClick={() => void kickAllViewers()}
+                        >
+                          Remover todos
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 space-y-1.5 border-t border-border p-3">
+                    <Label className="text-xs text-muted-foreground">Convite</Label>
+                    <div className="flex gap-1.5">
+                      <Input readOnly value={link} className="h-8 font-mono text-xs" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 px-2"
+                        onClick={() => void copy(link)}
+                      >
+                        <Copy className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
                 </div>
+              ) : null}
+
+              {side === 'chat' ? (
                 <div className="min-h-0 flex-1">
                   <RoomChat
                     items={chatFeed}
@@ -1051,10 +1038,117 @@ export function HostPage() {
                     onSend={(body) => sendRef.current({ type: 'chat', body })}
                   />
                 </div>
-              </div>
-            )}
-          </ResizablePanel>
-        </ResizablePanelGroup>
+              ) : null}
+
+              {side === 'settings' ? (
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Sala</p>
+                    <div className="flex flex-col gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="justify-start"
+                        disabled={action.busy}
+                        onClick={() =>
+                          void patchRoom(
+                            { active: !active },
+                            {
+                              pending: active ? 'Desativando…' : 'Reativando…',
+                              success: active ? 'Sala desativada' : 'Sala reativada',
+                            },
+                          )
+                        }
+                      >
+                        {active ? 'Desativar sala' : 'Reativar sala'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="justify-start"
+                        disabled={action.busy}
+                        onClick={() =>
+                          void patchRoom(
+                            { joinMode: joinMode === 'ask' ? 'open' : 'ask' },
+                            {
+                              pending: 'Atualizando…',
+                              success:
+                                joinMode === 'ask' ? 'Sala pública' : 'Entrada com aceite',
+                            },
+                          )
+                        }
+                      >
+                        {joinMode === 'ask' ? 'Tornar pública' : 'Exigir aceite'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="justify-start"
+                        disabled={action.busy}
+                        onClick={() =>
+                          void patchRoom(
+                            { voiceEnabled: !voiceEnabled },
+                            {
+                              pending: 'Atualizando…',
+                              success: voiceEnabled ? 'Voz desligada' : 'Voz ligada',
+                            },
+                          )
+                        }
+                      >
+                        {voiceEnabled ? 'Desligar voz' : 'Ligar voz'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <form
+                    className="space-y-2"
+                    onSubmit={(e: FormEvent) => {
+                      e.preventDefault()
+                      void patchRoom(
+                        { maxViewers: newMax },
+                        { pending: 'Salvando…', success: 'Limite atualizado' },
+                      )
+                    }}
+                  >
+                    <Label htmlFor="max" className="text-xs text-muted-foreground">
+                      Máx. espectadores
+                    </Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="max"
+                        type="number"
+                        min={1}
+                        max={8}
+                        value={newMax}
+                        onChange={(e) => setNewMax(Number(e.target.value))}
+                        className="h-8 w-20"
+                      />
+                      <Button type="submit" size="sm" variant="outline" disabled={action.busy}>
+                        Salvar
+                      </Button>
+                    </div>
+                  </form>
+
+                  <div className="border-t border-border pt-3">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="w-full justify-start gap-2 text-muted-foreground"
+                      onClick={() => void logout()}
+                    >
+                      <LogOut className="size-3.5" />
+                      Sair do painel
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </aside>
+          </>
+        ) : null}
       </div>
     </div>
   )
