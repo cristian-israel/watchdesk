@@ -60,60 +60,17 @@ export function SalasPage() {
       descricao="Crie uma transmissão, copie o link e compartilhe a tela. Sem senha — só o link."
     >
       <div className="flex flex-col gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle>Nova transmissão</CardTitle>
-            <CardDescription>
-              {displayName
-                ? `Como ${displayName}. Escolha se quem chega precisa do seu aceite.`
-                : 'Defina seu nome no menu antes de transmitir.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button
-                type="button"
-                variant={joinMode === 'ask' ? 'default' : 'outline'}
-                className="sm:flex-1"
-                onClick={() => setJoinMode('ask')}
-              >
-                Pedir para entrar
-              </Button>
-              <Button
-                type="button"
-                variant={joinMode === 'open' ? 'default' : 'outline'}
-                className="sm:flex-1"
-                onClick={() => setJoinMode('open')}
-              >
-                Público (link basta)
-              </Button>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={voiceEnabled}
-                onChange={(e) => setVoiceEnabled(e.target.checked)}
-                className="size-4 rounded border border-input"
-              />
-              Ativar voz na sala
-            </label>
-            <Button type="button" disabled={action.busy || !displayName} onClick={() => void novaTransmissao()}>
-              Começar a transmitir
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Suas salas</CardTitle>
-            <CardDescription>Reabra no mesmo aparelho ou encerre quando não precisar mais.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!rooms.length ? (
-              <p className="text-sm text-muted-foreground">Nenhuma sala ainda.</p>
-            ) : (
+        {rooms.length ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Sua sala</CardTitle>
+              <CardDescription>
+                Um aparelho, uma sala. Reabra para transmitir ou exclua para criar outra.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
               <ul className="flex flex-col gap-3">
-                {rooms.map((room) => {
+                {rooms.slice(0, 1).map((room) => {
                   const convite = viewerInviteUrl(room.slug)
                   return (
                     <li
@@ -155,7 +112,12 @@ export function SalasPage() {
                           value={convite}
                           className="h-9 min-w-0 flex-1 rounded-lg border border-input bg-transparent px-2.5 font-mono text-xs"
                         />
-                        <Button type="button" variant="outline" size="sm" onClick={() => void copiar(convite)}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void copiar(convite)}
+                        >
                           Copiar
                         </Button>
                       </div>
@@ -163,9 +125,56 @@ export function SalasPage() {
                   )
                 })}
               </ul>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Nova transmissão</CardTitle>
+              <CardDescription>
+                {displayName
+                  ? `Como ${displayName}. Escolha se quem chega precisa do seu aceite.`
+                  : 'Defina seu nome no menu antes de transmitir.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant={joinMode === 'ask' ? 'default' : 'outline'}
+                  className="sm:flex-1"
+                  onClick={() => setJoinMode('ask')}
+                >
+                  Pedir para entrar
+                </Button>
+                <Button
+                  type="button"
+                  variant={joinMode === 'open' ? 'default' : 'outline'}
+                  className="sm:flex-1"
+                  onClick={() => setJoinMode('open')}
+                >
+                  Público (link basta)
+                </Button>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={voiceEnabled}
+                  onChange={(e) => setVoiceEnabled(e.target.checked)}
+                  className="size-4 rounded border border-input"
+                />
+                Ativar voz na sala
+              </label>
+              <Button
+                type="button"
+                disabled={action.busy || !displayName}
+                onClick={() => void novaTransmissao()}
+              >
+                Começar a transmitir
+              </Button>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </Pagina>
   )

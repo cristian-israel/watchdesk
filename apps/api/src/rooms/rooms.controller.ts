@@ -48,12 +48,24 @@ export class RoomsController {
     const voiceEnabled = Boolean(body?.voiceEnabled)
     try {
       const created = await this.rooms.createRoom(device, joinMode, maxViewers, voiceEnabled)
+      if (created.already) {
+        throw new HttpException(
+          'Este aparelho já tem uma sala. Reabra ou exclua a atual antes de criar outra.',
+          409,
+        )
+      }
       setSessionCookie(res, created.sess.id, req)
       res.status(201)
       return created.payload
     } catch (e: unknown) {
+      if (e instanceof HttpException) throw e
       const err = e as { code?: string; message?: string }
-      if (err.code === 'ER_DUP_ENTRY') throw new HttpException('Sala já existe.', 409)
+      if (err.code === 'ER_DUP_ENTRY' || err.message === 'device_has_room') {
+        throw new HttpException(
+          'Este aparelho já tem uma sala. Reabra ou exclua a atual antes de criar outra.',
+          409,
+        )
+      }
       if (err.message === 'create_failed') {
         throw new HttpException('Não foi possível criar a sala.', 500)
       }

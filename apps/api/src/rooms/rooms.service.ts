@@ -113,6 +113,11 @@ export class RoomsService {
     maxViewers: number,
     voiceEnabled = false,
   ) {
+    const owned = await this.listByDevice(device.id)
+    if (owned.length) {
+      return { already: true as const, room: owned[0]! }
+    }
+
     const displayName = device.display_name || ''
     let slug = ''
     let roomId = 0
@@ -129,8 +134,17 @@ export class RoomsService {
         roomId = ins.insertId
         break
       } catch (e: unknown) {
-        const err = e as { code?: string }
-        if (err.code === 'ER_DUP_ENTRY') continue
+        const err = e as { code?: string; message?: string }
+        if (err.code === 'ER_DUP_ENTRY') {
+          // UNIQUE device: outra request ganhou a corrida
+          if (String(err.message || '').includes('uq_rooms_device')) {
+            const again = await this.listByDevice(device.id)
+            if (again.length) return { already: true as const, room: again[0]! }
+            throw new Error('device_has_room')
+          }
+          // colisão de slug — tenta outro
+          continue
+        }
         throw e
       }
     }
@@ -140,6 +154,7 @@ export class RoomsService {
     if (!row) throw new Error('create_failed')
     this.live.ensure(row)
     return {
+      already: false as const,
       sess,
       payload: {
         ok: true as const,
