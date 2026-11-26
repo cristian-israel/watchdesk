@@ -11,7 +11,7 @@ import { useShellMode } from './shell-mode'
 import { SideNav } from './side-nav'
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { ready, displayName, error, refresh, saveName } = useProfile()
+  const { ready, displayName, user, error, refresh, saveName, login } = useProfile()
   const { immersive } = useShellMode()
   const [recolhida, setRecolhida] = useState(false)
 
@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     )
   }
 
-  if (error && !displayName) {
+  if (error && !displayName && !user) {
     return (
       <div className="flex h-svh items-center justify-center bg-background p-4">
         <Card className="w-full max-w-sm">
@@ -41,8 +41,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     )
   }
 
-  if (!displayName) {
-    return <NomeGate saveName={saveName} />
+  if (!displayName && !user) {
+    return <NomeGate saveName={saveName} login={login} />
   }
 
   // Chrome fica na árvore (só some via CSS). Trocar de branch remountava a rota

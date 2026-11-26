@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
 import { AudioSettingsPanel } from '@/components/audio-settings-panel'
 import { ControlButton, IslandDivider } from '@/components/control-button'
@@ -26,6 +26,8 @@ import { StageBoard, type StageItem } from '@/components/stage-board'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
 import {
   appendMessage,
@@ -99,11 +101,16 @@ function SpeakingHint({
 
 export function SalaPage() {
   const { room = '' } = useParams()
+  const navigate = useNavigate()
   const action = useActionDialog()
-  const { displayName: profileName, deviceId } = useProfile()
+  const { displayName: profileName, deviceId, user } = useProfile()
   const [displayName, setDisplayName] = useState('')
   const [missing, setMissing] = useState('')
   const [booting, setBooting] = useState(true)
+  const [needsJoin, setNeedsJoin] = useState(false)
+  const [joinRole, setJoinRole] = useState<'viewer' | 'controller'>('viewer')
+  const [controllerPassword, setControllerPassword] = useState('')
+  const [controllerDenied, setControllerDenied] = useState(false)
   const [active, setActive] = useState(false)
   const [admitPending, setAdmitPending] = useState(false)
   const [denied, setDenied] = useState('')
@@ -209,7 +216,9 @@ export function SalaPage() {
     setBooting(true)
     setDenied('')
     setAdmitPending(false)
-    const meta = await api<{ exists: boolean; active?: boolean; joinMode?: string }>(
+    setNeedsJoin(false)
+    setControllerDenied(false)
+    const meta = await api<{ exists: boolean; active?: boolean; joinMode?: string; status?: string }>(
       `/api/rooms/${encodeURIComponent(room)}`,
     )
     if (!meta.ok || meta.data.exists === false) {
@@ -224,33 +233,59 @@ export function SalaPage() {
     }
 
     const res = await api<SessionInfo>('/api/session')
-    if (res.ok && res.data.role === 'viewer' && res.data.room === room) {
-      setDisplayName(res.data.displayName)
-      setActive(true)
-      setAdmitPending((meta.data.joinMode || res.data.joinMode) === 'ask')
-      setBooting(false)
-      return
+    if (res.ok && res.data.room === room) {
+      if (res.data.role === 'host') {
+        navigate(`/salas/${encodeURIComponent(room)}`, { replace: true })
+        return
+      }
+      if (res.data.role === 'viewer') {
+        setDisplayName(res.data.displayName)
+        setActive(true)
+        setAdmitPending((meta.data.joinMode || res.data.joinMode) === 'ask')
+        setBooting(false)
+        return
+      }
     }
 
-    await enter()
+    setNeedsJoin(true)
     setBooting(false)
   }
 
   async function enter() {
     if (!profileName) {
-      setMissing('Defina seu nome no menu antes de entrar.')
+      setMissing('Defina seu apelido antes de entrar.')
       return
     }
+    setControllerDenied(false)
     await action.run({ pending: 'Entrando…', success: 'Pronto' }, async () => {
-      const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/viewer`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      setDisplayName(data.displayName)
-      setMissing('')
-      setDenied('')
-      setActive(true)
-      setAdmitPending(data.status === 'pending')
+      try {
+        const data = await apiOrThrow<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/join`, {
+          method: 'POST',
+          body: JSON.stringify({
+            role: joinRole,
+            controllerPassword: joinRole === 'controller' ? controllerPassword : undefined,
+            displayName: profileName,
+          }),
+        })
+        if (data.role === 'host') {
+          navigate(`/salas/${encodeURIComponent(room)}`, { replace: true })
+          return
+        }
+        setDisplayName(data.displayName)
+        setMissing('')
+        setDenied('')
+        setNeedsJoin(false)
+        setActive(true)
+        setAdmitPending(data.status === 'pending')
+      } catch (e: unknown) {
+        const err = e as Error & { code?: string }
+        if (err.code === 'controller_unauthorized') {
+          setControllerDenied(true)
+          setJoinRole('viewer')
+          throw new Error('Não autorizado como controlador. Você pode entrar como espectador.')
+        }
+        throw e
+      }
     })
   }
 
@@ -330,6 +365,13 @@ export function SalaPage() {
     if (msg.type === 'auth_changed') {
       toast.error(msg.message, { id: msg.message })
       void leave()
+      return
+    }
+    if (msg.type === 'role_changed') {
+      toast.message(msg.message || 'Seu papel na sala mudou.')
+      if (msg.role === 'host') {
+        navigate(`/salas/${encodeURIComponent(room)}`, { replace: true })
+      }
       return
     }
     if (msg.type === 'slots') {
@@ -572,20 +614,75 @@ export function SalaPage() {
                 : missing
                   ? missing
                   : !roomActive
-                    ? 'Esta sala está desativada no momento.'
-                    : 'Entre com o link desta sala.'}
+                    ? 'Esta sala expirou ou foi encerrada.'
+                    : needsJoin
+                      ? 'Escolha como entrar: espectador ou controlador.'
+                      : 'Entre com o link desta sala.'}
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            {roomActive && !missing && !denied ? (
-              <Button
-                type="button"
-                disabled={action.busy || !profileName}
-                className="w-full"
-                onClick={() => void enter()}
-              >
-                Entrar
-              </Button>
+          <CardContent className="flex flex-col gap-3">
+            {roomActive && !missing && needsJoin ? (
+              <>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={joinRole === 'viewer' ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => setJoinRole('viewer')}
+                  >
+                    Espectador
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={joinRole === 'controller' ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => setJoinRole('controller')}
+                  >
+                    Controlador
+                  </Button>
+                </div>
+                {joinRole === 'controller' && !user ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="ctrl-pass">Senha de controlador</Label>
+                    <Input
+                      id="ctrl-pass"
+                      type="password"
+                      value={controllerPassword}
+                      onChange={(e) => setControllerPassword(e.target.value)}
+                      placeholder="Se você foi designado"
+                    />
+                  </div>
+                ) : null}
+                {joinRole === 'controller' && user ? (
+                  <p className="text-xs text-muted-foreground">
+                    Dono entra sem senha. Designado precisa da senha de controlador.
+                  </p>
+                ) : null}
+                {joinRole === 'controller' && user ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="ctrl-pass-user">Senha de controlador (se designado)</Label>
+                    <Input
+                      id="ctrl-pass-user"
+                      type="password"
+                      value={controllerPassword}
+                      onChange={(e) => setControllerPassword(e.target.value)}
+                    />
+                  </div>
+                ) : null}
+                {controllerDenied ? (
+                  <p className="text-sm text-destructive">
+                    Não autorizado como controlador. Entre como espectador.
+                  </p>
+                ) : null}
+                <Button
+                  type="button"
+                  disabled={action.busy || !profileName}
+                  className="w-full"
+                  onClick={() => void enter()}
+                >
+                  Entrar
+                </Button>
+              </>
             ) : denied ? (
               <Button type="button" className="w-full" onClick={() => void enter()}>
                 Tentar de novo
@@ -602,9 +699,9 @@ export function SalaPage() {
       <div className="flex h-full min-h-0 items-center justify-center p-4 pb-20 sm:pb-0">
         <Card className="w-full max-w-sm">
           <CardHeader>
-            <CardTitle>Aguardando o host…</CardTitle>
+            <CardTitle>Aguardando o controlador…</CardTitle>
             <CardDescription>
-              Você pediu para entrar em {room}. Quando o host aceitar, a transmissão aparece aqui.
+              Você pediu para entrar em {room}. Quando o controlador aceitar, a transmissão aparece aqui.
             </CardDescription>
           </CardHeader>
           <CardContent>

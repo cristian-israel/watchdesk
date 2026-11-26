@@ -19,4 +19,7 @@ export class AppEnv {
   readonly turnPort = Number(argValue('turn-port') || process.env.TURN_PORT || 3478)
   readonly turnRealm = argValue('turn-realm') || process.env.TURN_REALM || 'watchdesk'
   readonly databaseUrl = process.env.DATABASE_URL || ''
+  readonly adminLogin = process.env.ADMIN_LOGIN || 'admin'
+  readonly adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
+  readonly adminDisplayName = process.env.ADMIN_DISPLAY_NAME || 'Admin'
 }

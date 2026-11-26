@@ -11,6 +11,7 @@ export type RosterMember = {
   peerId: string
   role: 'host' | 'viewer'
   displayName: string
+  deviceId?: string
 }
 
 export type PendingMember = {
@@ -71,6 +72,7 @@ export type SignalInbound =
   | { type: 'chat_history'; messages: ChatMessage[] }
   | { type: 'roster'; members: RosterMember[] }
   | { type: 'auth_changed'; message: string }
+  | { type: 'role_changed'; role: 'host' | 'viewer'; message?: string }
   | {
       type: 'room_updated'
       active: boolean

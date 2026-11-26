@@ -5,11 +5,18 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { navItems } from './nav-items'
 import { NomeAparelho } from './nome-aparelho'
+import { useProfile } from './profile'
 
 export function BottomNav() {
   const location = useLocation()
+  const { user } = useProfile()
+  const items = navItems.filter((item) => {
+    if (item.adminOnly && user?.role !== 'admin') return false
+    if (item.authOnly && !user) return false
+    return true
+  })
   const [menuAberto, setMenuAberto] = useState(false)
-  const menuAtivo = navItems.some((item) => item.mobile === 'menu' && location.pathname === item.to)
+  const menuAtivo = items.some((item) => item.mobile === 'menu' && location.pathname === item.to)
 
   return (
     <>
@@ -17,8 +24,13 @@ export function BottomNav() {
         className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur sm:hidden"
         aria-label="Principal"
       >
-        <div className="grid grid-cols-3">
-          {navItems
+        <div
+          className={cn(
+            'grid',
+            items.filter((item) => item.mobile === 'bar').length <= 1 ? 'grid-cols-2' : 'grid-cols-3',
+          )}
+        >
+          {items
             .filter((item) => item.mobile === 'bar')
             .map((item) => (
               <NavLink
@@ -57,7 +69,7 @@ export function BottomNav() {
               <DrawerTitle>Menu</DrawerTitle>
             </DrawerHeader>
             <div className="grid gap-2 p-4">
-              {navItems
+              {items
                 .filter((item) => item.mobile === 'menu')
                 .map((item) => (
                   <NavLink

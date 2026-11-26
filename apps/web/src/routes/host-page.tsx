@@ -97,8 +97,11 @@ export function HostPage() {
   const { room = '' } = useParams()
   const navigate = useNavigate()
   const action = useActionDialog()
-  const { displayName: profileName, deviceId, rooms: ownedRooms } = useProfile()
+  const { displayName: profileName, deviceId, rooms: ownedRooms, user, refresh } = useProfile()
   const owned = ownedRooms.find((r) => r.slug === room)
+  const isOwnerOrAdmin = Boolean(owned || user?.role === 'admin')
+  const [lastControllerPassword, setLastControllerPassword] = useState('')
+
   const [displayName, setDisplayName] = useState('')
   const [booting, setBooting] = useState(true)
   const [panel, setPanel] = useState(false)
@@ -237,21 +240,21 @@ export function HostPage() {
       setBooting(false)
       return
     }
-    if (owned) {
-      const host = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/resume`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      if (host.ok) {
-        openFromSession(host.data)
-        setBooting(false)
-        return
-      }
-      setDenied(host.message)
-      toast.error(host.message, { id: host.message })
-    } else {
-      setDenied('Só o aparelho que criou esta sala pode transmitir.')
+    const host = await api<SessionInfo>(`/api/rooms/${encodeURIComponent(room)}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ role: 'controller' }),
+    })
+    if (host.ok) {
+      openFromSession(host.data)
+      setBooting(false)
+      return
     }
+    if (host.code === 'controller_unauthorized') {
+      setDenied('Não autorizado como controlador. Use o link da sala e entre como espectador.')
+    } else {
+      setDenied(host.message)
+    }
+    toast.error(host.message, { id: host.message })
     setBooting(false)
   }
 
@@ -291,6 +294,13 @@ export function HostPage() {
     }
     if (msg.type === 'error') {
       toast.error(msg.message, { id: msg.message })
+      return
+    }
+    if (msg.type === 'role_changed') {
+      toast.message(msg.message || 'Seu papel na sala mudou.')
+      if (msg.role === 'viewer') {
+        navigate(`/sala/${encodeURIComponent(room)}`, { replace: true })
+      }
       return
     }
     if (msg.type === 'viewer_joined') {
@@ -523,6 +533,44 @@ export function HostPage() {
   function admit(peerId: string, accept: boolean) {
     sendRef.current({ type: 'admit', peerId, accept })
     setPending((prev) => prev.filter((p) => p.peerId !== peerId))
+  }
+
+  async function designateViewer(deviceIdTarget: string, name: string) {
+    await action.run({ pending: 'Designando…', success: 'Controlador designado' }, async () => {
+      const data = await apiOrThrow<{ controllerPassword: string }>(
+        `/api/rooms/${encodeURIComponent(room)}/designate-controller`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ deviceId: deviceIdTarget, displayName: name }),
+        },
+      )
+      setLastControllerPassword(data.controllerPassword)
+      toast.message(`Senha de controlador: ${data.controllerPassword}`)
+      await refresh()
+    })
+  }
+
+  async function revokeDesignated() {
+    await action.run({ pending: 'Revogando…', success: 'Controlador revogado' }, async () => {
+      await apiOrThrow(`/api/rooms/${encodeURIComponent(room)}/revoke-controller`, {
+        method: 'POST',
+        body: '{}',
+      })
+      setLastControllerPassword('')
+      await refresh()
+    })
+  }
+
+  async function rotateControllerPassword() {
+    await action.run({ pending: 'Gerando…', success: 'Nova senha' }, async () => {
+      const data = await apiOrThrow<{ controllerPassword: string }>(
+        `/api/rooms/${encodeURIComponent(room)}/controller-password`,
+        { method: 'POST', body: '{}' },
+      )
+      setLastControllerPassword(data.controllerPassword)
+      toast.message(`Senha de controlador: ${data.controllerPassword}`)
+      await refresh()
+    })
   }
 
   async function kickAllViewers() {
@@ -1009,6 +1057,18 @@ export function HostPage() {
                                     <UserX className="size-3" />
                                     Remover
                                   </Button>
+                                  {isOwnerOrAdmin && v.deviceId ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 gap-1 px-2 text-xs"
+                                      disabled={action.busy}
+                                      onClick={() => void designateViewer(v.deviceId!, v.displayName)}
+                                    >
+                                      Designar controlador
+                                    </Button>
+                                  ) : null}
                                 </div>
                               </li>
                             )
@@ -1030,6 +1090,38 @@ export function HostPage() {
                   </div>
 
                   <div className="shrink-0 space-y-1.5 border-t border-border p-3">
+                    {isOwnerOrAdmin && owned?.designatedDisplayName ? (
+                      <div className="mb-2 space-y-1.5 rounded-lg border border-border p-2">
+                        <p className="text-xs text-muted-foreground">
+                          Designado: {owned.designatedDisplayName}
+                        </p>
+                        {lastControllerPassword ? (
+                          <p className="font-mono text-xs">Senha: {lastControllerPassword}</p>
+                        ) : null}
+                        <div className="flex flex-wrap gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={action.busy}
+                            onClick={() => void rotateControllerPassword()}
+                          >
+                            Nova senha
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={action.busy}
+                            onClick={() => void revokeDesignated()}
+                          >
+                            Revogar
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                     <Label className="text-xs text-muted-foreground">Convite</Label>
                     <div className="flex gap-1.5">
                       <Input readOnly value={link} className="h-8 font-mono text-xs" />

@@ -1,11 +1,18 @@
 import { NavLink } from 'react-router'
 import { cn } from '@/lib/utils'
 import { navItems } from './nav-items'
+import { useProfile } from './profile'
 
 export function SideNav() {
+  const { user } = useProfile()
+  const items = navItems.filter((item) => {
+    if (item.adminOnly && user?.role !== 'admin') return false
+    if (item.authOnly && !user) return false
+    return true
+  })
   return (
     <nav className="grid gap-1" aria-label="Principal">
-      {navItems.map((item) => (
+      {items.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}

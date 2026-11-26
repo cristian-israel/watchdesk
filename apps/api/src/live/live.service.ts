@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common'
 import {
   broadcastRoom,
+  demoteHostToViewer,
   ensureLive,
   kickRole,
+  promoteViewerToHost,
   roster,
   type LiveClient,
   type RoomRow,
@@ -59,5 +61,17 @@ export class LiveService {
 
   kickViewers(room: RuntimeRoom, reason: string) {
     kickRole(room, 'viewer', reason)
+  }
+
+  promoteDesignated(slug: string, deviceId: string, displayName: string) {
+    const rt = this.rooms.get(slug)
+    if (!rt) return
+    promoteViewerToHost(rt, deviceId, displayName)
+  }
+
+  demoteControllerToViewer(slug: string, message: string) {
+    const rt = this.rooms.get(slug)
+    if (!rt?.host) return
+    demoteHostToViewer(rt, message)
   }
 }

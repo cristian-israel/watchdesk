@@ -64,4 +64,13 @@ export class DevicesService {
     ])
     return new Set(sessRows.map((row) => String(row.id)))
   }
+
+  async clearDisplayName(deviceId: string): Promise<Set<string>> {
+    await this.db.query('UPDATE devices SET display_name = NULL WHERE id = ?', [deviceId])
+    const [sessRows] = await this.db.query<RowDataPacket[]>(
+      'SELECT id FROM sessions WHERE device_id = ?',
+      [deviceId],
+    )
+    return new Set(sessRows.map((row) => String(row.id)))
+  }
 }

@@ -1,4 +1,5 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common'
+import { AuthModule } from './auth/auth.module'
 import { RateLimitMiddleware } from './common/rate-limit.middleware'
 import { ConfigModule } from './config/config.module'
 import { DatabaseModule } from './database/database.module'
@@ -12,6 +13,7 @@ import { SessionsModule } from './sessions/sessions.module'
   imports: [
     ConfigModule,
     DatabaseModule,
+    AuthModule,
     DevicesModule,
     SessionsModule,
     RoomsModule,
@@ -23,6 +25,18 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(RateLimitMiddleware)
-      .forRoutes('me', 'me/{*path}', 'rooms', 'rooms/{*path}', 'session', 'logout', 'ice')
+      .forRoutes(
+        'me',
+        'me/{*path}',
+        'rooms',
+        'rooms/{*path}',
+        'session',
+        'logout',
+        'ice',
+        'auth',
+        'auth/{*path}',
+        'admin',
+        'admin/{*path}',
+      )
   }
 }

@@ -25,9 +25,13 @@ describe('http-util', () => {
     assert.equal(hashEqHex(a, shaHex('y')), false)
   })
 
-  it('normalizeName trim e limite', () => {
+  it('normalizeName trim e limite 2–32', () => {
     assert.equal(normalizeName('  Cris  '), 'Cris')
     assert.equal(normalizeName(''), null)
+    assert.equal(normalizeName('A'), null)
+    assert.equal(normalizeName('Ab'), 'Ab')
+    assert.equal(normalizeName('x'.repeat(32)), 'x'.repeat(32))
+    assert.equal(normalizeName('x'.repeat(33)), null)
   })
 
   it('validateKey: criação mín. 8, login mín. 4', () => {

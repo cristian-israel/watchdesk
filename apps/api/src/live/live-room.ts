@@ -1,4 +1,4 @@
-export const MAX_SLOTS = 8
+export const MAX_SLOTS = 19
 
 export type JoinMode = 'open' | 'ask'
 export type ClientRole = 'host' | 'viewer' | 'pending'
@@ -179,12 +179,13 @@ export function canRelayScreen(
 }
 
 export function roster(room: RuntimeRoom) {
-  const list: { peerId: string; role: string; displayName: string }[] = []
+  const list: { peerId: string; role: string; displayName: string; deviceId?: string }[] = []
   if (room.host) {
     list.push({
       peerId: room.host.peerId,
       role: 'host',
       displayName: room.host.displayName,
+      deviceId: room.host.deviceId,
     })
   }
   for (const v of room.viewers.values()) {
@@ -192,6 +193,7 @@ export function roster(room: RuntimeRoom) {
       peerId: v.peerId,
       role: 'viewer',
       displayName: v.displayName,
+      deviceId: v.deviceId,
     })
   }
   return list
@@ -278,22 +280,67 @@ function clearMediaSlots(room: RuntimeRoom) {
   broadcastRoom(room, { type: 'slots', slots: [] })
 }
 
+export function demoteHostToViewer(room: RuntimeRoom, message: string) {
+  const prev = room.host
+  if (!prev) return { ok: false as const }
+  room.host = null
+  clearMediaSlots(room)
+  prev.role = 'viewer'
+  room.viewers.set(prev.peerId, prev)
+  wsSend(prev.ws, {
+    type: 'role_changed',
+    role: 'viewer',
+    message,
+  })
+  broadcastRoom(room, { type: 'roster', members: roster(room) })
+  broadcastRoom(room, { type: 'slots', slots: slotList(room) })
+  if (room.voiceEnabled) {
+    broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+  }
+  return { ok: true as const, client: prev }
+}
+
+export function promoteViewerToHost(room: RuntimeRoom, deviceId: string, displayName?: string) {
+  if (room.host?.deviceId === deviceId) {
+    if (displayName) room.host.displayName = displayName
+    return { ok: true as const, already: true as const }
+  }
+  const viewer = [...room.viewers.values()].find((v) => v.deviceId === deviceId)
+  if (!viewer) return { ok: false as const, message: 'Participante não está na sala.' }
+
+  if (room.host) {
+    demoteHostToViewer(room, 'O dono designou outro controlador.')
+  }
+
+  room.viewers.delete(viewer.peerId)
+  viewer.role = 'host'
+  if (displayName) viewer.displayName = displayName
+  room.host = viewer
+  clearMediaSlots(room)
+  wsSend(viewer.ws, {
+    type: 'role_changed',
+    role: 'host',
+    message: 'Você foi designado como controlador.',
+  })
+  broadcastRoom(room, { type: 'roster', members: roster(room) })
+  broadcastRoom(room, { type: 'slots', slots: slotList(room) })
+  if (room.voiceEnabled) {
+    broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+  }
+  return { ok: true as const, already: false as const, client: viewer }
+}
+
 export function resolveHostJoin(
   room: RuntimeRoom,
-  opts: { sessionRole: string; incomingWs: LiveWs },
+  opts: { sessionRole: string; incomingWs: LiveWs; takeoverMessage?: string },
 ) {
   if (opts.sessionRole !== 'host') return { kicked: false }
   if (!room.host || room.host.ws === opts.incomingWs) return { kicked: false }
 
-  const prev = room.host
-  try {
-    wsSend(prev.ws, { type: 'error', message: 'Outro host entrou nesta sala.' })
-    prev.ws.close?.()
-  } catch {
-    /* ok */
-  }
-  room.host = null
-  clearMediaSlots(room)
+  demoteHostToViewer(
+    room,
+    opts.takeoverMessage || 'O dono assumiu o controle da sala.',
+  )
   return { kicked: true }
 }
 

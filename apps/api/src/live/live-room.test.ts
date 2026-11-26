@@ -24,7 +24,7 @@ import {
 } from './live-room'
 
 describe('live-room resolveHostJoin', () => {
-  it('kicks previous host when a new host joins', () => {
+  it('demote previous host to viewer when a new host joins', () => {
     const room = createTestRoom()
     const prevWs = mockWs()
     room.host = testClient({
@@ -44,8 +44,9 @@ describe('live-room resolveHostJoin', () => {
     assert.equal(result.kicked, true)
     assert.equal(room.host, null)
     assert.equal(room.slotOwners.size, 0)
-    assert.equal((prevWs.msgs[0] as { type?: string })?.type, 'error')
-    assert.equal(prevWs.readyState, 3)
+    assert.equal(room.viewers.get('h1')?.role, 'viewer')
+    assert.equal((prevWs.msgs[0] as { type?: string })?.type, 'role_changed')
+    assert.equal(prevWs.readyState, 1)
   })
 })
 

@@ -1,7 +1,7 @@
 import type { SignalOutbound, SlotInfo } from '@/lib/signal'
 import { peerKey } from '@/lib/signal'
 
-export const MAX_SLOTS = 8
+export const MAX_SLOTS = 19
 
 export type ScreenShareSend = (msg: SignalOutbound) => void
 

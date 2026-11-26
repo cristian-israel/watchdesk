@@ -57,12 +57,17 @@ export function HomePage() {
   }
 
   return (
-    <Pagina titulo="Início" descricao="Assista com o link da sala. Seu nome fica neste aparelho.">
+    <Pagina
+      titulo="Início"
+      descricao="Cole o link da sala. Conta cria salas; convidado só entra."
+    >
       <div className="flex flex-col gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>Assistir</CardTitle>
-            <CardDescription>Cole o link completo ou só o id da sala — sem senha.</CardDescription>
+            <CardTitle>Entrar na sala</CardTitle>
+            <CardDescription>
+              Um link só — na sala você escolhe espectador ou controlador.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={onSubmit} autoComplete="off">

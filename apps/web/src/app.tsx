@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useParams } from 'react-router'
 import { ActionDialogProvider } from '@/actions/action-dialog'
 import { AppToaster } from '@/appearance/app-toaster'
+import { AdminUsersPage } from './routes/admin-users-page'
 import { HostPage } from './routes/host-page'
 import { HomePage } from './routes/home-page'
 import { LoggedLayout } from './routes/logged-layout'
@@ -22,6 +23,7 @@ export function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/salas" element={<SalasPage />} />
           <Route path="/salas/:room" element={<HostPage />} />
+          <Route path="/admin/usuarios" element={<AdminUsersPage />} />
           <Route path="/preferencias" element={<PreferenciasPage />} />
           <Route path="/host/:room" element={<HostRedirect />} />
           <Route path="/sala/:room" element={<SalaPage />} />

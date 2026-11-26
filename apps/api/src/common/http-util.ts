@@ -3,20 +3,69 @@ import type { IncomingMessage } from 'node:http'
 import type { Request, Response } from 'express'
 
 export const ROOM_RE = /^[a-zA-Z0-9_-]{1,40}$/
-export const NAME_RE = /^.{1,80}$/
+export const NAME_MIN = 2
+export const NAME_MAX = 32
+export const NAME_RE = new RegExp(`^.{${NAME_MIN},${NAME_MAX}}$`)
+export const LOGIN_RE = /^[a-zA-Z0-9_.-]{3,64}$/
 export const KEY_MAX = 128
 export const KEY_MIN_CREATE = 8
 export const KEY_MIN_LOGIN = 4
 export const WS_MAX_PAYLOAD = 256 * 1024
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+export const AUTH_TTL_MS = 30 * 24 * 60 * 60 * 1000
 export const DEVICE_TTL_SEC = 365 * 24 * 60 * 60
 export const ICE_TTL_SEC = 3600
 export const RECENT_LIMIT = 10
 export const CHAT_HISTORY = 100
 export const CHAT_MAX = 500
+export const TTL_MIN_MINUTES = 5
+export const TTL_MAX_MINUTES = 24 * 60
+export const TTL_DEFAULT_MINUTES = 10
+export const SLOTS_USER = 2
+export const SLOTS_ADMIN = 10
+export const CAPACITY_USER = 10
+export const CAPACITY_ADMIN = 20
 
 export function shaHex(s: string) {
   return crypto.createHash('sha256').update(s).digest('hex')
+}
+
+export function hashPassword(password: string) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.scryptSync(password, salt, 32).toString('hex')
+  return `scrypt$${salt}$${hash}`
+}
+
+export function verifyPassword(password: string, stored: string) {
+  const [algo, salt, hash] = String(stored || '').split('$')
+  if (algo !== 'scrypt' || !salt || !hash) return false
+  const next = crypto.scryptSync(password, salt, 32).toString('hex')
+  return hashEqHex(next, hash)
+}
+
+export function randomControllerPassword() {
+  return crypto.randomBytes(6).toString('base64url').slice(0, 10)
+}
+
+export function clampTtlMinutes(value: unknown, fallback = TTL_DEFAULT_MINUTES) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  const rounded = Math.round(n)
+  if (rounded < TTL_MIN_MINUTES) return TTL_MIN_MINUTES
+  if (rounded > TTL_MAX_MINUTES) return TTL_MAX_MINUTES
+  return rounded
+}
+
+export function capacityForRole(role: string) {
+  return role === 'admin' ? CAPACITY_ADMIN : CAPACITY_USER
+}
+
+export function slotsForRole(role: string) {
+  return role === 'admin' ? SLOTS_ADMIN : SLOTS_USER
+}
+
+export function maxViewersForCapacity(capacity: number) {
+  return Math.max(1, capacity - 1)
 }
 
 export function hashEqHex(a: string, b: string) {
@@ -32,6 +81,10 @@ export function normalizeName(name: unknown): string | null {
   const n = String(name || '').trim()
   if (!NAME_RE.test(n)) return null
   return n
+}
+
+export function nameLengthMessage() {
+  return `Apelido: ${NAME_MIN} a ${NAME_MAX} caracteres.`
 }
 
 export function validateKey(key: unknown, min = KEY_MIN_CREATE) {
@@ -106,6 +159,14 @@ export function clearSessionCookie(res: Response, req: Request) {
 
 export function setDeviceCookie(res: Response, id: string, req: Request) {
   appendSetCookie(res, cookieHeader('wd_device', id, DEVICE_TTL_SEC, req))
+}
+
+export function setAuthCookie(res: Response, token: string, req: Request) {
+  appendSetCookie(res, cookieHeader('wd_auth', token, Math.floor(AUTH_TTL_MS / 1000), req))
+}
+
+export function clearAuthCookie(res: Response, req: Request) {
+  appendSetCookie(res, cookieHeader('wd_auth', '', 0, req))
 }
 
 export function createRateLimiter({ windowMs = 60_000, max = 8 } = {}) {
