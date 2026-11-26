@@ -9,8 +9,6 @@ import {
 } from 'react'
 import { api, type AuthUser, type Me } from '@/lib/api'
 
-const PREFER_LOGIN_KEY = 'watchdesk.preferLogin'
-
 type ProfileValue = {
   ready: boolean
   deviceId: string
@@ -91,11 +89,6 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ login: loginName, password }),
       })
       if (!res.ok) return res.message
-      try {
-        sessionStorage.removeItem(PREFER_LOGIN_KEY)
-      } catch {
-        /* ignore */
-      }
       await refresh()
       return null
     },
@@ -107,31 +100,13 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     await refresh()
   }, [refresh])
 
-  const clearGuest = useCallback(async () => {
+  const exitGuest = useCallback(async () => {
     const res = await api<Me>('/api/me/guest-exit', { method: 'POST', body: '{}' })
     if (!res.ok) return res.message
     setError('')
     applyMe(res.data)
     return null
   }, [applyMe])
-
-  const exitGuest = useCallback(async () => {
-    try {
-      sessionStorage.removeItem(PREFER_LOGIN_KEY)
-    } catch {
-      /* ignore */
-    }
-    return clearGuest()
-  }, [clearGuest])
-
-  const enterLogin = useCallback(async () => {
-    try {
-      sessionStorage.setItem(PREFER_LOGIN_KEY, '1')
-    } catch {
-      /* ignore */
-    }
-    return clearGuest()
-  }, [clearGuest])
 
   const value = useMemo<ProfileValue>(
     () => ({
@@ -147,9 +122,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       exitGuest,
-      enterLogin,
     }),
-    [ready, me, error, refresh, saveName, login, logout, exitGuest, enterLogin],
+    [ready, me, error, refresh, saveName, login, logout, exitGuest],
   )
 
   return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>
@@ -159,16 +133,4 @@ export function useProfile() {
   const value = useContext(ProfileContext)
   if (!value) throw new Error('useProfile fora do ProfileProvider')
   return value
-}
-
-export function consumePreferLogin(): boolean {
-  try {
-    if (sessionStorage.getItem(PREFER_LOGIN_KEY) === '1') {
-      sessionStorage.removeItem(PREFER_LOGIN_KEY)
-      return true
-    }
-  } catch {
-    /* ignore */
-  }
-  return false
 }

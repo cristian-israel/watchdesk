@@ -1,10 +1,10 @@
 import { FormEvent, useState } from 'react'
+import { Loader } from 'lucide-react'
 import { useActionDialog } from '@/actions/action-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { consumePreferLogin } from './profile'
 
 type Mode = 'choose' | 'login' | 'guest'
 
@@ -16,7 +16,7 @@ export function NomeGate({
   login: (login: string, password: string) => Promise<string | null>
 }) {
   const action = useActionDialog()
-  const [mode, setMode] = useState<Mode>(() => (consumePreferLogin() ? 'login' : 'choose'))
+  const [mode, setMode] = useState<Mode>('choose')
   const [apelido, setApelido] = useState('')
   const [loginName, setLoginName] = useState('')
   const [password, setPassword] = useState('')
@@ -43,85 +43,96 @@ export function NomeGate({
   }
 
   return (
-    <div className="flex h-svh items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm">
+    <main className="grid min-h-svh place-items-center bg-background p-6">
+      <div className="grid w-full max-w-md gap-6">
+        <p className="font-heading text-2xl font-semibold tracking-tight">Watchdesk</p>
+
         {mode === 'choose' ? (
-          <>
+          <Card>
             <CardHeader>
-              <CardTitle>Watchdesk</CardTitle>
+              <CardTitle className="text-2xl">Entrar</CardTitle>
               <CardDescription>
-                Entre com sua conta para criar salas, ou como convidado para assistir.
+                Conta autenticada cria salas. Convidado só assiste pelo link.
               </CardDescription>
             </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <Button type="button" onClick={() => setMode('login')} className="w-full">
+            <CardContent className="grid gap-3">
+              <Button type="button" className="w-full" onClick={() => setMode('login')}>
                 Login
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setMode('guest')}
-                className="w-full"
-              >
+              <Button type="button" variant="outline" className="w-full" onClick={() => setMode('guest')}>
                 Sou convidado
               </Button>
             </CardContent>
-          </>
+          </Card>
         ) : null}
 
         {mode === 'login' ? (
-          <>
+          <Card>
             <CardHeader>
-              <CardTitle>Login</CardTitle>
+              <CardTitle className="text-2xl">Entrar</CardTitle>
               <CardDescription>Contas são criadas pelo admin.</CardDescription>
             </CardHeader>
             <CardContent>
-              <form className="flex flex-col gap-3" onSubmit={(e) => void onLogin(e)} autoComplete="on">
-                <div className="space-y-2">
+              <form className="grid gap-4" onSubmit={(e) => void onLogin(e)} autoComplete="on">
+                <div className="grid gap-2">
                   <Label htmlFor="login">Login</Label>
                   <Input
                     id="login"
+                    name="login"
+                    autoComplete="username"
                     value={loginName}
                     onChange={(e) => setLoginName(e.target.value)}
                     required
                     autoFocus
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="senha">Senha da conta</Label>
+                <div className="grid gap-2">
+                  <Label htmlFor="senha">Senha</Label>
                   <Input
                     id="senha"
+                    name="senha"
                     type="password"
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                   />
                 </div>
-                <Button type="submit" disabled={action.busy} className="w-full">
-                  Entrar
-                </Button>
-                <Button type="button" variant="ghost" onClick={() => setMode('choose')}>
-                  Voltar
-                </Button>
+                <div className="flex items-center justify-between gap-2">
+                  <Button type="button" variant="ghost" onClick={() => setMode('choose')}>
+                    Voltar
+                  </Button>
+                  <Button type="submit" className="w-fit px-4" disabled={action.busy}>
+                    {action.busy ? (
+                      <>
+                        <Loader className="animate-spin" />
+                        Entrando
+                      </>
+                    ) : (
+                      'Entrar'
+                    )}
+                  </Button>
+                </div>
               </form>
             </CardContent>
-          </>
+          </Card>
         ) : null}
 
         {mode === 'guest' ? (
-          <>
+          <Card>
             <CardHeader>
-              <CardTitle>Convidado</CardTitle>
+              <CardTitle className="text-2xl">Convidado</CardTitle>
               <CardDescription>
-                Apelido com 2 a 32 caracteres. Convidados não criam salas.
+                Apelido com 2 a 32 caracteres. Sem criar salas.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form className="flex flex-col gap-3" onSubmit={(e) => void onGuest(e)} autoComplete="off">
-                <div className="space-y-2">
+              <form className="grid gap-4" onSubmit={(e) => void onGuest(e)} autoComplete="off">
+                <div className="grid gap-2">
                   <Label htmlFor="apelido">Apelido</Label>
                   <Input
                     id="apelido"
+                    name="apelido"
                     value={apelido}
                     onChange={(e) => setApelido(e.target.value)}
                     minLength={2}
@@ -130,17 +141,26 @@ export function NomeGate({
                     autoFocus
                   />
                 </div>
-                <Button type="submit" disabled={action.busy} className="w-full">
-                  Continuar
-                </Button>
-                <Button type="button" variant="ghost" onClick={() => setMode('choose')}>
-                  Voltar
-                </Button>
+                <div className="flex items-center justify-between gap-2">
+                  <Button type="button" variant="ghost" onClick={() => setMode('choose')}>
+                    Voltar
+                  </Button>
+                  <Button type="submit" className="w-fit px-4" disabled={action.busy}>
+                    {action.busy ? (
+                      <>
+                        <Loader className="animate-spin" />
+                        Entrando
+                      </>
+                    ) : (
+                      'Continuar'
+                    )}
+                  </Button>
+                </div>
               </form>
             </CardContent>
-          </>
+          </Card>
         ) : null}
-      </Card>
-    </div>
+      </div>
+    </main>
   )
 }

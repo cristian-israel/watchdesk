@@ -9,7 +9,6 @@ import { ShellModeProvider, useShellMode } from './shell-mode'
 
 vi.mock('./profile', () => ({
   useProfile: vi.fn(),
-  consumePreferLogin: () => false,
 }))
 
 const mockedProfile = vi.mocked(useProfile)
@@ -27,7 +26,6 @@ const baseProfile = {
   login: async () => null,
   logout: async () => undefined,
   exitGuest: async () => null,
-  enterLogin: async () => null,
 }
 
 function renderShell(children = <div>conteudo</div>) {
