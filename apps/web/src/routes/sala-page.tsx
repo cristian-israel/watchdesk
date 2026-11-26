@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { MonitorUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
 import { ChatSplit } from '@/components/chat-split'
 import { RoomChat } from '@/components/room-chat'
+import { StageBoard, type StageItem } from '@/components/stage-board'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { api, apiOrThrow, type SessionInfo } from '@/lib/api'
@@ -22,11 +24,9 @@ import { MAX_SLOTS, ScreenShareSession, normalizeSlots } from '@/lib/screen-shar
 import { VoiceMesh } from '@/lib/voice-mesh'
 import type { RosterMember, SignalInbound, SignalOutbound, SlotInfo } from '@/lib/signal'
 
-type TileEntry = {
-  name: string
-  video: HTMLVideoElement
-  stateEl: HTMLElement
-  tile: HTMLDivElement
+type RemoteShare = {
+  info: SlotInfo
+  stream: MediaStream
 }
 
 function SpeakingHint({
@@ -75,12 +75,12 @@ export function SalaPage() {
   const [roster, setRoster] = useState<RosterMember[]>([])
   const [canShareScreen, setCanShareScreen] = useState(false)
   const [localSharing, setLocalSharing] = useState(false)
+  const [locals, setLocals] = useState<Map<number, MediaStream>>(() => new Map())
+  const [remotes, setRemotes] = useState<Map<number, RemoteShare>>(() => new Map())
   const watching = active && !admitPending
   useImmersive(watching)
 
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
-  const tilesRef = useRef(new Map<number, TileEntry>())
-  const gridRef = useRef<HTMLDivElement>(null)
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
   const admitPendingRef = useRef(admitPending)
   admitPendingRef.current = admitPending
@@ -112,30 +112,25 @@ export function SalaPage() {
       memberIds: () =>
         rosterRef.current.map((m) => m.peerId).filter((id) => id !== selfPeerIdRef.current),
       onRemoteStream: (info, stream) => {
-        const tile = ensureTile(info)
-        if (!tile) return
-        tile.video.srcObject = stream
-        if (stream.getAudioTracks().length) tile.video.muted = false
-        void tile.video.play().catch(() => {
-          /* autoplay */
+        setRemotes((prev) => {
+          const next = new Map(prev)
+          next.set(info.slot, { info, stream })
+          return next
         })
         setWaiting(false)
       },
-      onRemoteSlotRemoved: (slot) => removeTile(slot),
+      onRemoteSlotRemoved: (slot) => removeRemote(slot),
     })
   }
 
   function resumeMediaPlayback() {
     voiceRef.current?.resumePlayback()
-    for (const { video } of tilesRef.current.values()) {
-      const stream = video.srcObject
-      if (stream instanceof MediaStream && stream.getAudioTracks().length) {
-        video.muted = false
-      }
-      void video.play().catch(() => {
-        /* autoplay */
-      })
-    }
+  }
+
+  function syncLocalShares() {
+    const list = screenRef.current?.listLocalShares() || []
+    setLocals(new Map(list.map((x) => [x.slot, x.stream])))
+    setLocalSharing(list.length > 0)
   }
 
   const { send } = useSignal(
@@ -156,40 +151,6 @@ export function SalaPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room])
-
-  // Firefox pausa/congela <video> com MediaStream ao perder foco; ao voltar precisa play().
-  useEffect(() => {
-    if (!watching) return
-
-    function resumeVideos() {
-      for (const { video, tile } of tilesRef.current.values()) {
-        const stream = video.srcObject
-        if (!stream) continue
-        video.srcObject = null
-        video.srcObject = stream
-        void video
-          .play()
-          .then(() => {
-            tile.classList.add('live')
-            setWaiting(false)
-          })
-          .catch(() => {
-            /* autoplay bloqueado */
-          })
-      }
-    }
-
-    function onVisibility() {
-      if (document.visibilityState === 'visible') resumeVideos()
-    }
-
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('focus', resumeVideos)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('focus', resumeVideos)
-    }
-  }, [watching])
 
   async function boot() {
     setBooting(true)
@@ -241,72 +202,36 @@ export function SalaPage() {
     })
   }
 
-  function ensureTile(info: SlotInfo | number) {
-    const slotInfo: SlotInfo =
-      typeof info === 'number'
-        ? { slot: info, peerId: '', displayName: `Tela ${info + 1}` }
-        : info
-    const grid = gridRef.current
-    if (!grid) return null
-    let entry = tilesRef.current.get(slotInfo.slot)
-    if (entry) {
-      const tag = entry.tile.querySelector('.tag') as HTMLElement
-      tag.textContent = slotInfo.displayName || `Tela ${slotInfo.slot + 1}`
-      entry.name = tag.textContent
-      return entry
-    }
-
-    const tile = document.createElement('div')
-    tile.dataset.slot = String(slotInfo.slot)
-    tile.className =
-      'tile relative overflow-hidden rounded-xl border border-border bg-black ring-1 ring-foreground/10'
-    tile.innerHTML =
-      '<video autoplay muted playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
-      '<span class="tag absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-xs text-white"></span>' +
-      '<span class="state absolute inset-0 grid place-items-center text-sm text-muted-foreground pointer-events-none">Conectando…</span>' +
-      '<button type="button" class="fs absolute right-2.5 top-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white">Tela cheia</button>'
-    const tag = tile.querySelector('.tag') as HTMLElement
-    tag.textContent = slotInfo.displayName || `Tela ${slotInfo.slot + 1}`
-    const video = tile.querySelector('video') as HTMLVideoElement
-    const stateEl = tile.querySelector('.state') as HTMLElement
-    tile.querySelector('.fs')!.addEventListener('click', () => {
-      void video.requestFullscreen?.()
+  function removeRemote(slot: number) {
+    setRemotes((prev) => {
+      if (!prev.has(slot)) return prev
+      const next = new Map(prev)
+      next.delete(slot)
+      const localCount = screenRef.current?.localSlotCount || 0
+      setWaiting(next.size === 0 && localCount === 0)
+      return next
     })
-    video.addEventListener('playing', () => {
-      tile.classList.add('live')
-      setWaiting(false)
-    })
-    video.addEventListener('pause', () => {
-      if (document.visibilityState !== 'visible' || !video.srcObject) return
-      void video.play().catch(() => {
-        /* ok */
-      })
-    })
-    grid.appendChild(tile)
-    entry = { name: tag.textContent, video, stateEl, tile }
-    tilesRef.current.set(slotInfo.slot, entry)
-    return entry
-  }
-
-  function removeTile(slot: number) {
-    const entry = tilesRef.current.get(slot)
-    if (!entry) return
-    tilesRef.current.delete(slot)
-    entry.tile.remove()
-    setWaiting(!tilesRef.current.size && !screenRef.current?.localSlotCount)
   }
 
   function syncSlots(slots: SlotInfo[]) {
     const self = selfPeerIdRef.current
     const remote = slots.filter((s) => s.peerId !== self)
     const wanted = new Set(remote.map((s) => s.slot))
-    for (const slot of [...tilesRef.current.keys()]) {
-      if (!wanted.has(slot)) removeTile(slot)
-    }
-    for (const info of remote) ensureTile(info)
+    setRemotes((prev) => {
+      const next = new Map(prev)
+      for (const slot of [...next.keys()]) {
+        if (!wanted.has(slot)) next.delete(slot)
+      }
+      for (const info of remote) {
+        const cur = next.get(info.slot)
+        if (cur) next.set(info.slot, { ...cur, info })
+      }
+      return next
+    })
     screenRef.current?.applySlots(slots)
-    setWaiting(!remote.length && !screenRef.current?.localSlotCount)
-    setLocalSharing((screenRef.current?.localSlotCount || 0) > 0)
+    syncLocalShares()
+    const localCount = screenRef.current?.localSlotCount || 0
+    setWaiting(!remote.length && localCount === 0)
   }
 
   async function onSignal(msg: SignalInbound) {
@@ -363,6 +288,7 @@ export function SalaPage() {
       setCanShareScreen(msg.canShareScreen)
       if (!msg.canShareScreen) {
         screenRef.current?.stopAllLocal(true)
+        setLocals(new Map())
         setLocalSharing(false)
       }
       return
@@ -377,11 +303,8 @@ export function SalaPage() {
     if (msg.type === 'host_left') {
       setChatFeed((prev) => appendSystem(prev, 'O host saiu', `host-leave-${Date.now()}`))
       screenRef.current?.teardown()
-      tilesRef.current.forEach((t) => {
-        t.video.srcObject = null
-        t.tile.classList.remove('live')
-        t.stateEl.textContent = 'Aguardando o host transmitir…'
-      })
+      setRemotes(new Map())
+      setLocals(new Map())
       setLocalSharing(false)
       setWaiting(true)
       return
@@ -465,9 +388,8 @@ export function SalaPage() {
 
   function teardown() {
     screenRef.current?.teardown()
-    tilesRef.current.forEach((t) => t.tile.remove())
-    tilesRef.current.clear()
-    gridRef.current?.replaceChildren()
+    setRemotes(new Map())
+    setLocals(new Map())
     voiceRef.current?.teardown()
     setChatFeed([])
     setRoster([])
@@ -500,7 +422,7 @@ export function SalaPage() {
         audio: true,
       })
       await screenRef.current!.publish(stream)
-      setLocalSharing(true)
+      syncLocalShares()
       setWaiting(false)
     } catch (err) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') return
@@ -510,7 +432,18 @@ export function SalaPage() {
 
   function stopSharing() {
     screenRef.current?.stopAllLocal(true)
+    setLocals(new Map())
     setLocalSharing(false)
+  }
+
+  function stopLocalSlot(slot: number) {
+    screenRef.current?.stopSlot(slot, true)
+    setLocals((prev) => {
+      const next = new Map(prev)
+      next.delete(slot)
+      return next
+    })
+    setLocalSharing((screenRef.current?.localSlotCount || 0) > 0)
   }
 
   async function leave() {
@@ -585,6 +518,27 @@ export function SalaPage() {
     )
   }
 
+  const stageItems: StageItem[] = [
+    ...[...locals.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([slot, stream]) => ({
+        slot,
+        label: `Você · Tela ${slot + 1}`,
+        stream,
+        muted: true,
+        onStop: () => stopLocalSlot(slot),
+      })),
+    ...[...remotes.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([slot, entry]) => ({
+        slot,
+        label: entry.info.displayName || `Tela ${slot + 1}`,
+        stream: entry.stream,
+        muted: entry.stream.getAudioTracks().length === 0,
+      })),
+  ]
+  const slotBusy = locals.size + remotes.size >= MAX_SLOTS
+
   return (
     <ChatSplit
       chat={
@@ -597,10 +551,10 @@ export function SalaPage() {
       }
     >
       <div
-        className="flex h-full min-h-0 flex-col"
+        className="flex h-full min-h-0 flex-col bg-black"
         onPointerDownCapture={() => resumeMediaPlayback()}
       >
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur">
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-card/90 px-4 py-3 backdrop-blur">
           <div className="min-w-0">
             <b className="font-medium">Sala {room}</b>
             {voiceEnabled ? (
@@ -623,7 +577,7 @@ export function SalaPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={tilesRef.current.size >= MAX_SLOTS}
+                  disabled={slotBusy}
                   onClick={() => void shareScreen()}
                 >
                   Compartilhar tela
@@ -653,14 +607,19 @@ export function SalaPage() {
             </Button>
           </div>
         </header>
-        <div
-          ref={gridRef}
-          className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto p-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))]"
-        />
-        {waiting ? (
-          <p className="px-4 pb-4 text-sm text-muted-foreground">Aguardando o host transmitir…</p>
-        ) : null}
-        <style>{`.tile.live .state{display:none}`}</style>
+        <div className="min-h-0 flex-1">
+          <StageBoard
+            items={stageItems}
+            empty={
+              <div className="flex flex-col items-center justify-center gap-2 px-6 text-center">
+                <MonitorUp className="size-10 text-white/25" />
+                <p className="text-sm text-white/60">
+                  {waiting ? 'Aguardando transmissão…' : 'Nada no ar'}
+                </p>
+              </div>
+            }
+          />
+        </div>
       </div>
     </ChatSplit>
   )

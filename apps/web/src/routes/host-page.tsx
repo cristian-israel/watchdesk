@@ -1,4 +1,11 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import {
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import {
   Check,
   Copy,
@@ -12,6 +19,7 @@ import {
   ScreenShare,
   ScreenShareOff,
   Settings2,
+  UserX,
   Users,
   X,
 } from 'lucide-react'
@@ -19,6 +27,7 @@ import { toast } from 'sonner'
 import { useNavigate, useParams } from 'react-router'
 import { useActionDialog } from '@/actions/action-dialog'
 import { RoomChat } from '@/components/room-chat'
+import { StageBoard, type StageItem } from '@/components/stage-board'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -53,70 +62,33 @@ type ShareEntry = {
   state: 'connecting' | 'live'
 }
 
-type RemoteTile = {
+type RemoteShare = {
   info: SlotInfo
-  video: HTMLVideoElement
-  tile: HTMLDivElement
+  stream: MediaStream
 }
 
 type SidePanel = 'closed' | 'people' | 'chat' | 'settings'
+
+const SIDE_MIN = 260
+const SIDE_MAX = 560
+const SIDE_DEFAULT = 320
+const SIDE_WIDTH_KEY = 'watchdesk.hostSideWidth'
+
+function readSideWidth() {
+  try {
+    const n = Number(localStorage.getItem(SIDE_WIDTH_KEY))
+    if (Number.isFinite(n)) return Math.min(SIDE_MAX, Math.max(SIDE_MIN, n))
+  } catch {
+    /* ignore */
+  }
+  return SIDE_DEFAULT
+}
 
 function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (!parts.length) return '?'
   if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase()
   return `${parts[0]![0] || ''}${parts[1]![0] || ''}`.toUpperCase()
-}
-
-function LocalShareTile({
-  slot,
-  stream,
-  state,
-  onStop,
-}: {
-  slot: number
-  stream: MediaStream
-  state: ShareEntry['state']
-  onStop: () => void
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-
-  useEffect(() => {
-    const el = videoRef.current
-    if (!el) return
-    el.srcObject = stream
-    el.muted = true
-    void el.play().catch(() => {
-      /* autoplay */
-    })
-  }, [stream])
-
-  return (
-    <div className="relative overflow-hidden rounded-lg bg-black">
-      <video
-        ref={videoRef}
-        autoPlay
-        muted
-        playsInline
-        className="block aspect-video w-full bg-black object-contain"
-      />
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-linear-to-t from-black/70 to-transparent px-2.5 py-2">
-        <span className="truncate text-xs text-white">
-          Você · Tela {slot + 1}
-          {state !== 'live' ? ' · conectando…' : ''}
-        </span>
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          className="h-7 shrink-0 bg-white/15 text-white hover:bg-white/25"
-          onClick={onStop}
-        >
-          Parar
-        </Button>
-      </div>
-    </div>
-  )
 }
 
 function ControlButton({
@@ -181,10 +153,15 @@ export function HostPage() {
   const [selfPeerId, setSelfPeerId] = useState('')
   const [screenAllowed, setScreenAllowed] = useState<Set<string>>(() => new Set())
   const [localShareCount, setLocalShareCount] = useState(0)
-  const [remoteShareCount, setRemoteShareCount] = useState(0)
+  const [remotes, setRemotes] = useState<Map<number, RemoteShare>>(() => new Map())
   const [linkCopied, setLinkCopied] = useState(false)
   const [side, setSide] = useState<SidePanel>('closed')
+  const [sideWidth, setSideWidth] = useState(readSideWidth)
 
+  const sideRef = useRef(side)
+  sideRef.current = side
+  const sideWidthRef = useRef(sideWidth)
+  sideWidthRef.current = sideWidth
   const panelRef = useRef(false)
   const sharesRef = useRef(shares)
   sharesRef.current = shares
@@ -197,8 +174,6 @@ export function HostPage() {
   const iceRef = useRef<RTCIceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }])
   const viewersRef = useRef(new Map<string, string>())
   const sendRef = useRef<(msg: SignalOutbound) => void>(() => undefined)
-  const remoteGridRef = useRef<HTMLDivElement>(null)
-  const remoteTilesRef = useRef(new Map<number, RemoteTile>())
   const voiceRef = useRef<VoiceMesh | null>(null)
   if (!voiceRef.current) {
     voiceRef.current = new VoiceMesh({
@@ -226,43 +201,24 @@ export function HostPage() {
   }
 
   function ensureRemoteTile(info: SlotInfo, stream: MediaStream) {
-    const grid = remoteGridRef.current
-    if (!grid) return
-    let entry = remoteTilesRef.current.get(info.slot)
-    if (!entry) {
-      const tile = document.createElement('div')
-      tile.className = 'relative overflow-hidden rounded-lg bg-black'
-      tile.innerHTML =
-        '<video autoplay playsinline class="block aspect-video w-full bg-black object-contain"></video>' +
-        '<span class="tag absolute bottom-2 left-2.5 rounded bg-black/65 px-2 py-0.5 text-xs text-white"></span>'
-      const video = tile.querySelector('video') as HTMLVideoElement
-      grid.appendChild(tile)
-      entry = { info, video, tile }
-      remoteTilesRef.current.set(info.slot, entry)
-      setRemoteShareCount(remoteTilesRef.current.size)
-    }
-    entry.info = info
-    const tag = entry.tile.querySelector('.tag') as HTMLElement
-    tag.textContent = info.displayName || `Tela ${info.slot + 1}`
-    entry.video.srcObject = stream
-    if (stream.getAudioTracks().length) entry.video.muted = false
-    else entry.video.muted = true
-    void entry.video.play().catch(() => {
-      /* autoplay */
+    setRemotes((prev) => {
+      const next = new Map(prev)
+      next.set(info.slot, { info, stream })
+      return next
     })
   }
 
   function removeRemoteTile(slot: number) {
-    const entry = remoteTilesRef.current.get(slot)
-    if (!entry) return
-    remoteTilesRef.current.delete(slot)
-    entry.tile.remove()
-    setRemoteShareCount(remoteTilesRef.current.size)
+    setRemotes((prev) => {
+      if (!prev.has(slot)) return prev
+      const next = new Map(prev)
+      next.delete(slot)
+      return next
+    })
   }
 
   function clearRemoteTiles() {
-    for (const slot of [...remoteTilesRef.current.keys()]) removeRemoteTile(slot)
-    setRemoteShareCount(0)
+    setRemotes(new Map())
   }
 
   const { send } = useSignal(
@@ -448,6 +404,19 @@ export function HostPage() {
     }
     if (msg.type === 'chat') {
       setChatFeed((prev) => appendMessage(prev, msg.message))
+      const mine =
+        Boolean(deviceId && msg.message.authorDeviceId === deviceId) ||
+        msg.message.authorName === (profileName || displayName)
+      if (!mine && sideRef.current !== 'chat') {
+        toast.message(msg.message.authorName, {
+          id: `chat-${msg.message.id}`,
+          description: msg.message.body,
+          action: {
+            label: 'Abrir',
+            onClick: () => setSide('chat'),
+          },
+        })
+      }
       return
     }
     if (msg.type === 'roster') {
@@ -516,6 +485,18 @@ export function HostPage() {
 
   function setViewerScreenAllow(peerId: string, allow: boolean) {
     sendRef.current({ type: 'screen_allow', peerId, allow })
+  }
+
+  function kickViewer(peerId: string) {
+    sendRef.current({ type: 'kick', peerId })
+    screenRef.current?.onMemberLeft(peerId)
+    viewersRef.current.delete(peerId)
+    setScreenAllowed((prev) => {
+      const next = new Set(prev)
+      next.delete(peerId)
+      return next
+    })
+    setRoster((prev) => prev.filter((m) => m.peerId !== peerId))
   }
 
   async function logout() {
@@ -603,6 +584,34 @@ export function HostPage() {
     setSide((cur) => (cur === next ? 'closed' : next))
   }
 
+  function onSideResizePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = sideWidthRef.current
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+
+    function onMove(ev: PointerEvent) {
+      const next = Math.min(SIDE_MAX, Math.max(SIDE_MIN, startW + (startX - ev.clientX)))
+      sideWidthRef.current = next
+      setSideWidth(next)
+    }
+
+    function onUp(ev: PointerEvent) {
+      el.releasePointerCapture(ev.pointerId)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      try {
+        localStorage.setItem(SIDE_WIDTH_KEY, String(sideWidthRef.current))
+      } catch {
+        /* ignore */
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   if (booting) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center p-4 text-sm text-muted-foreground">
@@ -632,12 +641,27 @@ export function HostPage() {
   }
 
   const sorted = [...shares.entries()].sort((a, b) => a[0] - b[0])
+  const remoteList = [...remotes.entries()].sort((a, b) => a[0] - b[0])
   const viewers = roster.filter((m) => m.role === 'viewer')
   const link = viewerInviteUrl(room)
   const hostName = profileName || displayName
   const selfSpeaking = speakingIds.includes(selfPeerId) && !voiceMuted
   const slotBudget = shares.size >= MAX_SLOTS
-  const stageEmpty = !sorted.length && !remoteShareCount
+  const stageItems: StageItem[] = [
+    ...sorted.map(([slot, entry]) => ({
+      slot,
+      label: `Você · Tela ${slot + 1}${entry.state !== 'live' ? ' · conectando…' : ''}`,
+      stream: entry.stream,
+      muted: true,
+      onStop: () => stopSlot(slot),
+    })),
+    ...remoteList.map(([slot, entry]) => ({
+      slot,
+      label: entry.info.displayName || `Tela ${slot + 1}`,
+      stream: entry.stream,
+      muted: entry.stream.getAudioTracks().length === 0,
+    })),
+  ]
   const sideOpen = side !== 'closed'
 
   return (
@@ -691,36 +715,19 @@ export function HostPage() {
       <div className="flex min-h-0 flex-1">
         {/* Stage */}
         <div className="relative min-h-0 min-w-0 flex-1 bg-black">
-          <div className="absolute inset-0 overflow-y-auto px-3 pt-16 pb-28 sm:px-5">
-            {stageEmpty ? (
-              <div className="flex h-full min-h-56 flex-col items-center justify-center gap-2 text-center">
-                <MonitorUp className="size-10 text-white/25" />
-                <p className="text-sm text-white/60">Nada no ar</p>
-                <p className="max-w-xs text-xs text-white/40">
-                  Compartilhe a tela ou libere um espectador em Pessoas.
-                </p>
-              </div>
-            ) : (
-              <div className="mx-auto flex w-full max-w-6xl flex-col gap-3">
-                {sorted.length ? (
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3">
-                    {sorted.map(([slot, entry]) => (
-                      <LocalShareTile
-                        key={slot}
-                        slot={slot}
-                        stream={entry.stream}
-                        state={entry.state}
-                        onStop={() => stopSlot(slot)}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                <div
-                  ref={remoteGridRef}
-                  className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3 empty:hidden"
-                />
-              </div>
-            )}
+          <div className="absolute inset-0 pt-14 pb-24 sm:pb-28">
+            <StageBoard
+              items={stageItems}
+              empty={
+                <div className="flex flex-col items-center justify-center gap-2 px-6 text-center">
+                  <MonitorUp className="size-10 text-white/25" />
+                  <p className="text-sm text-white/60">Nada no ar</p>
+                  <p className="max-w-xs text-xs text-white/40">
+                    Compartilhe a tela ou libere um espectador em Pessoas.
+                  </p>
+                </div>
+              }
+            />
           </div>
 
           {/* Bottom controls */}
@@ -818,10 +825,26 @@ export function HostPage() {
             />
             <aside
               className={cn(
-                'z-40 flex w-full max-w-sm shrink-0 flex-col border-l border-border bg-card',
-                'absolute inset-y-0 right-0 md:static md:max-w-[320px]',
+                'relative z-40 flex shrink-0 flex-col border-l border-border bg-card',
+                'absolute inset-y-0 right-0 w-full max-w-sm',
+                'md:static md:max-w-none md:w-[var(--host-side-w)]',
               )}
+              style={{ ['--host-side-w' as string]: `${sideWidth}px` }}
             >
+              {/* Resize handle — desktop */}
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Redimensionar painel"
+                onPointerDown={onSideResizePointerDown}
+                className={cn(
+                  'absolute inset-y-0 left-0 z-10 hidden w-2 cursor-col-resize touch-none md:block',
+                  'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border',
+                  'hover:after:bg-primary/50 active:after:bg-primary',
+                )}
+              >
+                <div className="absolute top-1/2 left-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-border" />
+              </div>
               <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
                 {(
                   [
@@ -990,6 +1013,16 @@ export function HostPage() {
                                       <ScreenShare className="size-3" />
                                     )}
                                     {canScreen ? 'Revogar' : 'Tela'}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive"
+                                    onClick={() => kickViewer(v.peerId)}
+                                  >
+                                    <UserX className="size-3" />
+                                    Remover
                                   </Button>
                                 </div>
                               </li>

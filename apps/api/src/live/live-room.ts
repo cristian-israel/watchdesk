@@ -391,6 +391,37 @@ export function detachClient(live: Map<string, RuntimeRoom>, client: LiveClient)
   }
 }
 
+export function kickViewer(room: RuntimeRoom, peerId: string, reason: string) {
+  const viewer = room.viewers.get(peerId)
+  if (!viewer) return { ok: false as const, message: 'Espectador não encontrado.' }
+
+  room.viewers.delete(peerId)
+  if (viewer.deviceId) room.admittedDevices.delete(viewer.deviceId)
+  room.screenAllowed.delete(peerId)
+  releaseSlotsOf(room, peerId)
+
+  broadcastRoom(room, {
+    type: 'viewer_left',
+    peerId: viewer.peerId,
+    displayName: viewer.displayName,
+  })
+  broadcastRoom(room, { type: 'roster', members: roster(room) })
+  broadcastRoom(room, { type: 'slots', slots: slotList(room) })
+  if (room.voiceEnabled) {
+    broadcastRoom(room, { type: 'voice_state', peers: voiceState(room) })
+  }
+
+  wsSend(viewer.ws, { type: 'auth_changed', message: reason })
+  try {
+    viewer.ws.watchdeskClient = null
+    viewer.ws.close?.()
+  } catch {
+    /* ok */
+  }
+
+  return { ok: true as const, client: viewer }
+}
+
 export function kickRole(room: RuntimeRoom, role: string, reason: string) {
   if (role !== 'viewer') return
   const list = [...room.viewers.values()]

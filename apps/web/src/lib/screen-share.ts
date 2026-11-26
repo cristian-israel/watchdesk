@@ -51,6 +51,19 @@ export class ScreenShareSession {
     return [...this.localShares.keys()].sort((a, b) => a - b)
   }
 
+  getLocalStream(slot: number) {
+    return this.localShares.get(slot)
+  }
+
+  listLocalShares() {
+    return this.getLocalSlots()
+      .map((slot) => {
+        const stream = this.localShares.get(slot)
+        return stream ? { slot, stream } : null
+      })
+      .filter((x): x is { slot: number; stream: MediaStream } => Boolean(x))
+  }
+
   async publish(stream: MediaStream) {
     const [track] = stream.getVideoTracks()
     if (track && 'contentHint' in track) track.contentHint = 'detail'

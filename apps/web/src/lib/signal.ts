@@ -95,6 +95,7 @@ export type SignalOutbound =
   | { type: 'self_mute'; muted: boolean }
   | { type: 'voice_mute'; peerId: string; muted: boolean }
   | { type: 'screen_allow'; peerId: string; allow: boolean }
+  | { type: 'kick'; peerId: string }
   | { type: 'chat'; body: string }
   | { type: 'admit'; peerId: string; accept: boolean }
 

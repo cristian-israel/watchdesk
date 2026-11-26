@@ -10,6 +10,7 @@ import {
   createTestRoom,
   denyPending,
   detachClient,
+  kickViewer,
   mockWs,
   pendingList,
   promotePending,
@@ -375,5 +376,58 @@ describe('live-room voice mute', () => {
       { peerId: 'h1', muted: true, forceMuted: false },
       { peerId: 'v1', muted: true, forceMuted: false },
     ])
+  })
+})
+
+describe('live-room kickViewer', () => {
+  it('removes one viewer, slots and admit, keeps others', () => {
+    const room = createTestRoom()
+    room.host = testClient({
+      ws: mockWs(),
+      peerId: 'h1',
+      role: 'host',
+      roomSlug: 'test',
+      displayName: 'H',
+    })
+    const targetWs = mockWs()
+    room.viewers.set(
+      'v1',
+      testClient({
+        ws: targetWs,
+        peerId: 'v1',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'Alvo',
+        deviceId: 'd1',
+      }),
+    )
+    room.viewers.set(
+      'v2',
+      testClient({
+        ws: mockWs(),
+        peerId: 'v2',
+        role: 'viewer',
+        roomSlug: 'test',
+        displayName: 'Outro',
+        deviceId: 'd2',
+      }),
+    )
+    room.admittedDevices.add('d1')
+    room.admittedDevices.add('d2')
+    room.screenAllowed.add('v1')
+    room.slotOwners.set(0, 'v1')
+    room.slotOwners.set(1, 'h1')
+
+    const result = kickViewer(room, 'v1', 'Removido')
+    assert.equal(result.ok, true)
+    assert.equal(room.viewers.has('v1'), false)
+    assert.equal(room.viewers.has('v2'), true)
+    assert.equal(room.admittedDevices.has('d1'), false)
+    assert.equal(room.admittedDevices.has('d2'), true)
+    assert.equal(room.screenAllowed.has('v1'), false)
+    assert.equal(room.slotOwners.has(0), false)
+    assert.equal(room.slotOwners.get(1), 'h1')
+    assert.equal((targetWs.msgs[0] as { type?: string })?.type, 'auth_changed')
+    assert.equal(targetWs.readyState, 3)
   })
 })

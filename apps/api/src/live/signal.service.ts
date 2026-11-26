@@ -26,6 +26,7 @@ import {
   denyPending,
   detachClient,
   findClient,
+  kickViewer,
   pendingList,
   promotePending,
   releaseSlot,
@@ -293,6 +294,19 @@ export class SignalService {
     }
 
     if (client.role === 'pending') return
+
+    if (client.role === 'host' && msg.type === 'kick') {
+      const peerId = String(msg.peerId || '')
+      const result = kickViewer(room, peerId, 'Você foi removido da sala pelo host.')
+      if (!result.ok) {
+        wsSend(client.ws, { type: 'error', message: result.message })
+        return
+      }
+      if (result.client.sessionId) {
+        void this.sessions.delete(result.client.sessionId)
+      }
+      return
+    }
 
     if (client.role === 'host' && msg.type === 'screen_allow') {
       const peerId = String(msg.peerId || '')
