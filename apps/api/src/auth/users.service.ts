@@ -32,13 +32,24 @@ export class UsersService implements OnModuleInit {
   }
 
   async seedAdmin() {
+    const [admins] = await this.db.query<RowDataPacket[]>(
+      `SELECT id FROM users WHERE role = 'admin' AND active = 1 LIMIT 1`,
+    )
+    if (admins.length) return
+
     const login = String(this.env.adminLogin || '').trim().toLowerCase()
-    if (!LOGIN_RE.test(login)) return
-    const existing = await this.findByLogin(login)
-    if (existing) return
+    if (!LOGIN_RE.test(login)) {
+      console.warn(
+        'Admin seed ignorado: ADMIN_LOGIN inválido (3–64 chars: letras, números, _ . -).',
+      )
+      return
+    }
     const displayName = normalizeName(this.env.adminDisplayName) || 'Admin'
     const password = String(this.env.adminPassword || '')
-    if (password.length < 4) return
+    if (password.length < 4) {
+      console.warn('Admin seed ignorado: ADMIN_PASSWORD muito curta.')
+      return
+    }
     await this.createUser({
       login,
       password,
