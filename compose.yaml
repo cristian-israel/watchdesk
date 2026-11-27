@@ -3,6 +3,7 @@ name: watchdesk-local
 services:
   mysql:
     image: mysql:8.4
+    restart: unless-stopped
     environment:
       MYSQL_DATABASE: watchdesk
       MYSQL_USER: watchdesk
