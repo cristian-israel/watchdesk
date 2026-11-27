@@ -127,6 +127,13 @@ export class UsersService implements OnModuleInit {
     }
   }
 
+  async countActiveAdmins() {
+    const [rows] = await this.db.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1`,
+    )
+    return Number(rows[0]?.n || 0)
+  }
+
   async updateUser(
     id: number,
     patch: {
@@ -156,12 +163,32 @@ export class UsersService implements OnModuleInit {
       params.push(patch.role === 'admin' ? 'admin' : 'user')
     }
     if (typeof patch.active === 'boolean') {
+      if (
+        row.role === 'admin' &&
+        row.active &&
+        patch.active === false &&
+        (await this.countActiveAdmins()) <= 1
+      ) {
+        throw new Error('last_admin')
+      }
       updates.push('active = ?')
       params.push(patch.active ? 1 : 0)
     }
     if (!updates.length) return row
     await this.db.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, [...params, id])
+    if (typeof patch.active === 'boolean' && !patch.active) {
+      await this.db.query('DELETE FROM auth_sessions WHERE user_id = ?', [id])
+    }
     return (await this.findById(id))!
+  }
+
+  async deleteUser(id: number) {
+    const row = await this.findById(id)
+    if (!row) throw new Error('not_found')
+    if (row.role === 'admin' && row.active && (await this.countActiveAdmins()) <= 1) {
+      throw new Error('last_admin')
+    }
+    await this.db.query('DELETE FROM users WHERE id = ?', [id])
   }
 
   async authenticate(loginRaw: string, password: string): Promise<UserRow | null> {

@@ -49,9 +49,24 @@ export function AdminUsersPage() {
     })
   }
 
-  async function deactivate(id: number) {
-    if (!window.confirm('Desativar este usuário?')) return
-    await action.run({ pending: 'Desativando…', success: 'Desativado' }, async () => {
+  async function setActive(id: number, active: boolean) {
+    const label = active ? 'Reativar' : 'Desativar'
+    if (!window.confirm(`${label} este usuário?`)) return
+    await action.run(
+      { pending: `${label}…`, success: active ? 'Reativado' : 'Desativado' },
+      async () => {
+        await apiOrThrow(`/api/admin/users/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ active }),
+        })
+        await load()
+      },
+    )
+  }
+
+  async function removeUser(id: number) {
+    if (!window.confirm('Excluir este usuário de forma permanente? Não dá para desfazer.')) return
+    await action.run({ pending: 'Excluindo…', success: 'Excluído' }, async () => {
       await apiOrThrow(`/api/admin/users/${id}`, { method: 'DELETE' })
       await load()
     })
@@ -146,16 +161,39 @@ export function AdminUsersPage() {
                       {u.active ? '' : ' · inativo'}
                     </p>
                   </div>
-                  {u.active && u.id !== user.id ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={action.busy}
-                      onClick={() => void deactivate(u.id)}
-                    >
-                      Desativar
-                    </Button>
+                  {u.id !== user.id ? (
+                    <div className="flex flex-wrap gap-2">
+                      {u.active ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={action.busy}
+                          onClick={() => void setActive(u.id, false)}
+                        >
+                          Desativar
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={action.busy}
+                          onClick={() => void setActive(u.id, true)}
+                        >
+                          Reativar
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        disabled={action.busy}
+                        onClick={() => void removeUser(u.id)}
+                      >
+                        Excluir
+                      </Button>
+                    </div>
                   ) : null}
                 </li>
               ))}

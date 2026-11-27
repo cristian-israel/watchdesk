@@ -83,9 +83,12 @@ export class AuthController {
       active?: boolean
     },
   ) {
-    await this.ensureAdmin(req)
+    const admin = await this.ensureAdmin(req)
     const id = Number(idParam)
     if (!Number.isInteger(id) || id < 1) throw new HttpException('Usuário inválido.', 400)
+    if (id === admin.id && body.active === false) {
+      throw new HttpException('Não é possível desativar a si mesmo.', 400)
+    }
     try {
       const role: UserRole | undefined =
         body.role === undefined ? undefined : body.role === 'admin' ? 'admin' : 'user'
@@ -120,14 +123,14 @@ export class AuthController {
   }
 
   @Delete('admin/users/:id')
-  async deactivate(@Req() req: Request, @Param('id') idParam: string) {
+  async deleteUser(@Req() req: Request, @Param('id') idParam: string) {
     const admin = await this.ensureAdmin(req)
     const id = Number(idParam)
     if (!Number.isInteger(id) || id < 1) throw new HttpException('Usuário inválido.', 400)
-    if (id === admin.id) throw new HttpException('Não é possível desativar a si mesmo.', 400)
+    if (id === admin.id) throw new HttpException('Não é possível excluir a si mesmo.', 400)
     try {
-      const row = await this.users.updateUser(id, { active: false })
-      return { ok: true, user: this.users.publicUser(row) }
+      await this.users.deleteUser(id)
+      return { ok: true }
     } catch (e: unknown) {
       throw this.mapUserError(e)
     }
@@ -159,6 +162,8 @@ export class AuthController {
         return new HttpException('Senha deve ter ao menos 4 caracteres.', 400)
       case 'not_found':
         return new HttpException('Usuário não encontrado.', 404)
+      case 'last_admin':
+        return new HttpException('Não é possível remover o último admin ativo.', 400)
       default:
         if (e instanceof HttpException) return e
         return new HttpException('Não foi possível salvar o usuário.', 400)
