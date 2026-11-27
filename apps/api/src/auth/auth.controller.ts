@@ -147,7 +147,10 @@ export class AuthController {
     const err = e as { message?: string }
     switch (err.message) {
       case 'login_invalid':
-        return new HttpException('Login inválido (3–64: letras, números, ._-).', 400)
+        return new HttpException(
+          'Login inválido (3–254: apelido ou e-mail, com letras, números, . _ + - e @).',
+          400,
+        )
       case 'login_taken':
         return new HttpException('Login já existe.', 409)
       case 'name_invalid':

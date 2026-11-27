@@ -6,7 +6,13 @@ export const ROOM_RE = /^[a-zA-Z0-9_-]{1,40}$/
 export const NAME_MIN = 2
 export const NAME_MAX = 32
 export const NAME_RE = new RegExp(`^.{${NAME_MIN},${NAME_MAX}}$`)
-export const LOGIN_RE = /^[a-zA-Z0-9_.-]{3,64}$/
+/** Login de conta: apelido curto ou e-mail (aceita @ e .). */
+export const LOGIN_MIN = 3
+export const LOGIN_MAX = 254
+export const LOGIN_RE = new RegExp(
+  `^[a-zA-Z0-9._+-]{1,64}(?:@[a-zA-Z0-9.-]{1,253}\\.[a-zA-Z]{2,})?$`,
+)
+
 export const KEY_MAX = 128
 export const KEY_MIN_CREATE = 8
 export const KEY_MIN_LOGIN = 4

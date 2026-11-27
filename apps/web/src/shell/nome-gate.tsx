@@ -79,9 +79,12 @@ export function NomeGate({
                   <Input
                     id="login"
                     name="login"
+                    type="text"
+                    inputMode="email"
                     autoComplete="username"
                     value={loginName}
                     onChange={(e) => setLoginName(e.target.value)}
+                    maxLength={254}
                     required
                     autoFocus
                   />

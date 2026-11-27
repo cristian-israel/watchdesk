@@ -69,7 +69,16 @@ export function AdminUsersPage() {
             <form className="flex flex-col gap-3" onSubmit={(e) => void onCreate(e)}>
               <div className="space-y-2">
                 <Label htmlFor="u-login">Login</Label>
-                <Input id="u-login" value={login} onChange={(e) => setLogin(e.target.value)} required />
+                <Input
+                  id="u-login"
+                  type="text"
+                  inputMode="email"
+                  value={login}
+                  onChange={(e) => setLogin(e.target.value)}
+                  maxLength={254}
+                  placeholder="nome ou email@dominio.com"
+                  required
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="u-apelido">Apelido (2–32)</Label>

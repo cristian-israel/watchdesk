@@ -85,7 +85,7 @@ FLUSH PRIVILEGES;
 
 Copie `deploy/.env.example` → `deploy/.env`. Obrigatórios em prod: `FRONTIER_ALIAS`, `DOMAIN=http://<FRONTIER_ALIAS>`, `PUBLIC_HOST`, `TURN_SECRET`. `DATABASE_URL` é obrigatório quando o profile `mysql` não está ativo.
 
-No primeiro boot, se não houver nenhum admin ativo, a API cria um a partir de `ADMIN_LOGIN` / `ADMIN_PASSWORD` / `ADMIN_DISPLAY_NAME` (login sem `@`). Defina senha forte em produção; depois do seed o valor no `.env` não altera admins já existentes.
+No primeiro boot, se não houver nenhum admin ativo, a API cria um a partir de `ADMIN_LOGIN` / `ADMIN_PASSWORD` / `ADMIN_DISPLAY_NAME` (apelido ou e-mail). Defina senha forte em produção; depois do seed o valor no `.env` não altera admins já existentes.
 
 `PUBLIC_HOST` = IP do Coturn (LAN ou público). A URL HTTPS do site fica só no porteiro do prod-hub.
 

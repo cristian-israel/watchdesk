@@ -1,6 +1,8 @@
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import type { ResultSetHeader, RowDataPacket } from 'mysql2'
 import {
+  LOGIN_MAX,
+  LOGIN_MIN,
   LOGIN_RE,
   hashPassword,
   normalizeName,
@@ -38,9 +40,9 @@ export class UsersService implements OnModuleInit {
     if (admins.length) return
 
     const login = String(this.env.adminLogin || '').trim().toLowerCase()
-    if (!LOGIN_RE.test(login)) {
+    if (!LOGIN_RE.test(login) || login.length < LOGIN_MIN || login.length > LOGIN_MAX) {
       console.warn(
-        'Admin seed ignorado: ADMIN_LOGIN inválido (3–64 chars: letras, números, _ . -).',
+        'Admin seed ignorado: ADMIN_LOGIN inválido (apelido ou e-mail, 3–254 chars, com @ e .).',
       )
       return
     }
@@ -102,7 +104,9 @@ export class UsersService implements OnModuleInit {
     const login = String(input.login || '')
       .trim()
       .toLowerCase()
-    if (!LOGIN_RE.test(login)) throw new Error('login_invalid')
+    if (!LOGIN_RE.test(login) || login.length < LOGIN_MIN || login.length > LOGIN_MAX) {
+      throw new Error('login_invalid')
+    }
     const displayName = normalizeName(input.displayName)
     if (!displayName) throw new Error('name_invalid')
     if (!input.password || input.password.length < 4) throw new Error('password_invalid')

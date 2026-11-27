@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  login VARCHAR(64) NOT NULL,
+  login VARCHAR(254) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(80) NOT NULL,
   role ENUM('admin', 'user') NOT NULL DEFAULT 'user',
