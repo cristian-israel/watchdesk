@@ -144,6 +144,7 @@ export function SalaPage() {
   admitPendingRef.current = admitPending
   const voiceEnabledRef = useRef(voiceEnabled)
   voiceEnabledRef.current = voiceEnabled
+  const voiceAwaitRosterRef = useRef(false)
   const selfPeerIdRef = useRef('')
   selfPeerIdRef.current = selfPeerId
   const rosterRef = useRef(roster)
@@ -338,13 +339,26 @@ export function SalaPage() {
       setCanShareScreen(Boolean(msg.canShareScreen))
       if (msg.admitStatus === 'pending') {
         setAdmitPending(true)
+        voiceAwaitRosterRef.current = false
         await voiceRef.current?.setEnabled(false)
         return
       }
       setAdmitPending(false)
       syncSlots(normalizeSlots(msg.slots))
       if (msg.voiceState) voiceRef.current?.applyVoiceState(msg.voiceState)
-      await voiceRef.current?.setEnabled(ve)
+      // Liga a voz só após o roster — evita descartar offers dos peers já na sala.
+      if (ve) {
+        if (rosterRef.current.length > 0) {
+          voiceRef.current?.setMembers(rosterRef.current.map((m) => m.peerId))
+          voiceAwaitRosterRef.current = false
+          await voiceRef.current?.setEnabled(true)
+        } else {
+          voiceAwaitRosterRef.current = true
+        }
+      } else {
+        voiceAwaitRosterRef.current = false
+        await voiceRef.current?.setEnabled(false)
+      }
       return
     }
     if (msg.type === 'admit_result') {
@@ -353,7 +367,15 @@ export function SalaPage() {
         setDenied('')
         syncSlots(normalizeSlots(msg.slots))
         toast.success('Você entrou na sala')
-        if (voiceEnabledRef.current) await voiceRef.current?.setEnabled(true)
+        if (voiceEnabledRef.current) {
+          if (rosterRef.current.length > 0) {
+            voiceRef.current?.setMembers(rosterRef.current.map((m) => m.peerId))
+            voiceAwaitRosterRef.current = false
+            await voiceRef.current?.setEnabled(true)
+          } else {
+            voiceAwaitRosterRef.current = true
+          }
+        }
       } else {
         setDenied(msg.message || 'O host recusou sua entrada.')
         teardown()
@@ -429,6 +451,10 @@ export function SalaPage() {
     if (msg.type === 'roster') {
       setRoster(msg.members)
       voiceRef.current?.setMembers(msg.members.map((m) => m.peerId))
+      if (voiceAwaitRosterRef.current && voiceEnabledRef.current) {
+        voiceAwaitRosterRef.current = false
+        await voiceRef.current?.setEnabled(true)
+      }
       return
     }
     if (msg.type === 'offer') {
@@ -490,6 +516,7 @@ export function SalaPage() {
       if (typeof msg.voiceEnabled === 'boolean') {
         setVoiceEnabled(msg.voiceEnabled)
         if (!admitPendingRef.current) {
+          voiceAwaitRosterRef.current = false
           void voiceRef.current?.setEnabled(msg.voiceEnabled)
         }
       }
@@ -504,6 +531,7 @@ export function SalaPage() {
     screenRef.current?.teardown()
     setRemotes(new Map())
     setLocals(new Map())
+    voiceAwaitRosterRef.current = false
     voiceRef.current?.teardown()
     setChatFeed([])
     setRoster([])

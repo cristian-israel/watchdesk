@@ -19,6 +19,11 @@ type PeerLink = {
   source: MediaStreamAudioSourceNode | null
   lastSpokeAt: number
   speaking: boolean
+  isOfferer: boolean
+  makingOffer: boolean
+  ignoreNegotiation: boolean
+  answerTimer: number | undefined
+  offerAttempts: number
 }
 
 type LocalAnalyser = {
@@ -29,6 +34,11 @@ type LocalAnalyser = {
 }
 
 const POLL_MS = 80
+export const VOICE_ANSWER_TIMEOUT_MS = 4000
+export const VOICE_RECONNECT_BASE_MS = 1000
+export const VOICE_RECONNECT_MAX_MS = 8000
+export const VOICE_MAX_OFFER_ATTEMPTS = 5
+export const VOICE_MAX_RECONNECT_ATTEMPTS = 6
 
 /** True se a instância tem API atual (evita ref velha após HMR). */
 export function voiceMeshSupportsDevices(voice: unknown): boolean {
@@ -50,6 +60,10 @@ export class VoiceMesh {
   private forceMuted = false
   private peers = new Map<string, PeerLink>()
   private memberIds = new Set<string>()
+  private pendingOffers = new Map<string, string>()
+  private pendingIce = new Map<string, RTCIceCandidateInit[]>()
+  private reconnectTimers = new Map<string, number>()
+  private reconnectAttempts = new Map<string, number>()
   private audioCtx: AudioContext | null = null
   private localAnalyser: LocalAnalyser | null = null
   private pollTimer: number | undefined
@@ -85,6 +99,16 @@ export class VoiceMesh {
     return this.enabled
   }
 
+  /** Exposto para testes. */
+  getPendingOfferCount() {
+    return this.pendingOffers.size
+  }
+
+  /** Exposto para testes. */
+  getPeerCount() {
+    return this.peers.size
+  }
+
   setSelfPeerId(peerId: string) {
     this.selfPeerId = peerId
   }
@@ -95,12 +119,17 @@ export class VoiceMesh {
 
   async setEnabled(enabled: boolean) {
     if (this.enabled === enabled) {
-      if (enabled) await this.syncPeers()
+      if (enabled) {
+        await this.syncPeers()
+        await this.flushPendingSignals()
+      }
       return
     }
     this.enabled = enabled
     if (!enabled) {
       this.stopSpeakingPoll()
+      this.clearReconnectTimers()
+      this.clearPendingSignals()
       this.teardownMedia()
       this.closeAllPeers()
       this.muted = true
@@ -111,12 +140,22 @@ export class VoiceMesh {
     }
     await this.ensureLocalStream()
     await this.syncPeers()
+    await this.flushPendingSignals()
     this.startSpeakingPoll()
   }
 
   setMembers(peerIds: string[]) {
     this.memberIds = new Set(peerIds.filter((id) => id && id !== this.selfPeerId))
-    if (this.enabled) void this.syncPeers()
+    for (const peerId of [...this.pendingOffers.keys()]) {
+      if (!this.memberIds.has(peerId)) this.pendingOffers.delete(peerId)
+    }
+    for (const peerId of [...this.pendingIce.keys()]) {
+      if (!this.memberIds.has(peerId)) this.pendingIce.delete(peerId)
+    }
+    for (const peerId of [...this.reconnectTimers.keys()]) {
+      if (!this.memberIds.has(peerId)) this.clearReconnect(peerId)
+    }
+    if (this.enabled) void this.syncPeers().then(() => this.flushPendingSignals())
   }
 
   applyVoiceState(peers: VoicePeerState[]) {
@@ -168,9 +207,45 @@ export class VoiceMesh {
   }
 
   async handleOffer(from: string, sdp: string) {
-    if (!this.enabled || !this.selfPeerId) return
+    if (!this.selfPeerId || !this.enabled) {
+      this.pendingOffers.set(from, sdp)
+      return
+    }
+    if (this.memberIds.size > 0 && !this.memberIds.has(from)) {
+      this.pendingOffers.set(from, sdp)
+      return
+    }
+
+    this.pendingOffers.delete(from)
+    this.clearReconnect(from)
+
+    const polite = this.selfPeerId > from
     const pc = await this.ensurePeer(from, false)
+    const link = this.peers.get(from)
+    if (!link || link.pc !== pc) return
+
+    const offerCollision = link.makingOffer || pc.signalingState !== 'stable'
+    if (offerCollision) {
+      if (!polite) return
+      try {
+        await pc.setLocalDescription({ type: 'rollback' })
+      } catch {
+        /* alguns browsers não suportam rollback — recria */
+        this.closePeer(from)
+        await this.ensurePeer(from, false)
+        const fresh = this.peers.get(from)
+        if (!fresh) return
+        await fresh.pc.setRemoteDescription({ type: 'offer', sdp })
+        await this.flushIce(from)
+        const answer = await fresh.pc.createAnswer()
+        await fresh.pc.setLocalDescription(answer)
+        this.opts.send({ type: 'voice_answer', to: from, sdp: answer.sdp || '' })
+        return
+      }
+    }
+
     await pc.setRemoteDescription({ type: 'offer', sdp })
+    await this.flushIce(from)
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     this.opts.send({ type: 'voice_answer', to: from, sdp: answer.sdp || '' })
@@ -178,15 +253,27 @@ export class VoiceMesh {
 
   async handleAnswer(from: string, sdp: string) {
     const link = this.peers.get(from)
-    if (!link) return
+    if (!link) {
+      return
+    }
+    this.clearAnswerTimer(link)
     if (!link.pc.currentRemoteDescription) {
       await link.pc.setRemoteDescription({ type: 'answer', sdp })
+      await this.flushIce(from)
     }
+    link.offerAttempts = 0
+    this.reconnectAttempts.delete(from)
   }
 
   async handleIce(from: string, candidate: RTCIceCandidateInit | null) {
+    if (!candidate) return
     const link = this.peers.get(from)
-    if (!link || !candidate) return
+    if (!link || !link.pc.remoteDescription) {
+      const q = this.pendingIce.get(from) || []
+      q.push(candidate)
+      this.pendingIce.set(from, q)
+      return
+    }
     try {
       await link.pc.addIceCandidate(candidate)
     } catch {
@@ -197,6 +284,8 @@ export class VoiceMesh {
   teardown() {
     this.enabled = false
     this.stopSpeakingPoll()
+    this.clearReconnectTimers()
+    this.clearPendingSignals()
     this.teardownMedia()
     this.closeAllPeers()
     this.memberIds.clear()
@@ -204,6 +293,103 @@ export class VoiceMesh {
     this.muted = true
     this.forceMuted = false
     this.emitSpeaking([])
+  }
+
+  private shouldOffer(peerId: string) {
+    return Boolean(this.selfPeerId && this.selfPeerId < peerId)
+  }
+
+  private clearPendingSignals() {
+    this.pendingOffers.clear()
+    this.pendingIce.clear()
+  }
+
+  private async flushPendingSignals() {
+    if (!this.enabled || !this.selfPeerId) return
+    const offers = [...this.pendingOffers.entries()]
+    for (const [from, sdp] of offers) {
+      if (this.memberIds.size > 0 && !this.memberIds.has(from)) continue
+      this.pendingOffers.delete(from)
+      await this.handleOffer(from, sdp)
+    }
+  }
+
+  private async flushIce(peerId: string) {
+    const q = this.pendingIce.get(peerId)
+    if (!q?.length) return
+    this.pendingIce.delete(peerId)
+    const link = this.peers.get(peerId)
+    if (!link?.pc.remoteDescription) {
+      this.pendingIce.set(peerId, q)
+      return
+    }
+    for (const c of q) {
+      try {
+        await link.pc.addIceCandidate(c)
+      } catch {
+        /* race */
+      }
+    }
+  }
+
+  private clearAnswerTimer(link: PeerLink) {
+    if (link.answerTimer !== undefined) {
+      window.clearTimeout(link.answerTimer)
+      link.answerTimer = undefined
+    }
+  }
+
+  private armAnswerTimeout(peerId: string) {
+    const link = this.peers.get(peerId)
+    if (!link?.isOfferer) return
+    this.clearAnswerTimer(link)
+    link.answerTimer = window.setTimeout(() => {
+      void this.onAnswerTimeout(peerId)
+    }, VOICE_ANSWER_TIMEOUT_MS)
+  }
+
+  private async onAnswerTimeout(peerId: string) {
+    if (!this.enabled || !this.memberIds.has(peerId)) return
+    const link = this.peers.get(peerId)
+    if (!link) return
+    link.answerTimer = undefined
+    if (link.pc.currentRemoteDescription) return
+    if (link.pc.connectionState === 'connected') return
+    if (link.offerAttempts >= VOICE_MAX_OFFER_ATTEMPTS) return
+    this.closePeer(peerId)
+    await this.ensurePeer(peerId, true)
+  }
+
+  private clearReconnect(peerId: string) {
+    const t = this.reconnectTimers.get(peerId)
+    if (t !== undefined) {
+      window.clearTimeout(t)
+      this.reconnectTimers.delete(peerId)
+    }
+  }
+
+  private clearReconnectTimers() {
+    for (const peerId of [...this.reconnectTimers.keys()]) this.clearReconnect(peerId)
+    this.reconnectAttempts.clear()
+  }
+
+  private scheduleReconnect(peerId: string) {
+    if (!this.enabled || !this.memberIds.has(peerId)) return
+    this.clearReconnect(peerId)
+    const attempt = this.reconnectAttempts.get(peerId) || 0
+    if (attempt >= VOICE_MAX_RECONNECT_ATTEMPTS) return
+    this.reconnectAttempts.set(peerId, attempt + 1)
+    const delay = Math.min(
+      VOICE_RECONNECT_BASE_MS * 2 ** attempt,
+      VOICE_RECONNECT_MAX_MS,
+    )
+    const timer = window.setTimeout(() => {
+      this.reconnectTimers.delete(peerId)
+      if (!this.enabled || !this.memberIds.has(peerId)) return
+      if (this.peers.has(peerId)) return
+      void this.ensurePeer(peerId, this.shouldOffer(peerId))
+    }, delay)
+    this.reconnectTimers.set(peerId, timer)
   }
 
   private emitSpeaking(ids: string[]) {
@@ -443,10 +629,14 @@ export class VoiceMesh {
     for (const peerId of [...this.peers.keys()]) this.closePeer(peerId)
   }
 
-  private closePeer(peerId: string) {
+  private closePeer(peerId: string, opts?: { scheduleReconnect?: boolean }) {
     const link = this.peers.get(peerId)
-    if (!link) return
+    if (!link) {
+      if (opts?.scheduleReconnect) this.scheduleReconnect(peerId)
+      return
+    }
     this.peers.delete(peerId)
+    this.clearAnswerTimer(link)
     this.detachRemoteAnalyser(link)
     try {
       link.pc.close()
@@ -456,16 +646,41 @@ export class VoiceMesh {
     link.audio.pause()
     link.audio.srcObject = null
     link.audio.remove()
+    if (opts?.scheduleReconnect) this.scheduleReconnect(peerId)
   }
 
   private async syncPeers() {
     if (!this.enabled || !this.selfPeerId) return
     for (const peerId of [...this.peers.keys()]) {
-      if (!this.memberIds.has(peerId)) this.closePeer(peerId)
+      if (!this.memberIds.has(peerId)) {
+        this.clearReconnect(peerId)
+        this.reconnectAttempts.delete(peerId)
+        this.closePeer(peerId)
+      }
     }
     for (const peerId of this.memberIds) {
-      const shouldOffer = this.selfPeerId < peerId
+      const shouldOffer = this.shouldOffer(peerId)
       await this.ensurePeer(peerId, shouldOffer)
+    }
+  }
+
+  private async sendOffer(peerId: string) {
+    const link = this.peers.get(peerId)
+    if (!link || !link.isOfferer) return
+    if (link.ignoreNegotiation) return
+    if (link.offerAttempts >= VOICE_MAX_OFFER_ATTEMPTS) return
+    try {
+      link.makingOffer = true
+      link.offerAttempts += 1
+      const offer = await link.pc.createOffer()
+      if (link.pc.signalingState === 'closed') return
+      await link.pc.setLocalDescription(offer)
+      this.opts.send({ type: 'voice_offer', to: peerId, sdp: offer.sdp || '' })
+      this.armAnswerTimeout(peerId)
+    } catch {
+      /* negotiation abort */
+    } finally {
+      link.makingOffer = false
     }
   }
 
@@ -473,6 +688,9 @@ export class VoiceMesh {
     let link = this.peers.get(peerId)
     if (link) return link.pc
 
+    this.clearReconnect(peerId)
+
+    const isOfferer = this.shouldOffer(peerId)
     const pc = new RTCPeerConnection({ iceServers: this.opts.iceServers() })
     const audio = document.createElement('audio')
     audio.autoplay = true
@@ -487,6 +705,11 @@ export class VoiceMesh {
       source: null,
       lastSpokeAt: 0,
       speaking: false,
+      isOfferer,
+      makingOffer: false,
+      ignoreNegotiation: true,
+      answerTimer: undefined,
+      offerAttempts: 0,
     }
     this.peers.set(peerId, entry)
 
@@ -506,7 +729,14 @@ export class VoiceMesh {
     }
 
     pc.ontrack = (e) => {
-      const stream = e.streams[0] || new MediaStream([e.track])
+      const stream =
+        e.streams[0] ||
+        (audio.srcObject instanceof MediaStream
+          ? audio.srcObject
+          : new MediaStream())
+      if (!e.streams[0]) {
+        stream.addTrack(e.track)
+      }
       audio.srcObject = stream
       void audio.play().catch(() => {
         /* autoplay */
@@ -520,18 +750,34 @@ export class VoiceMesh {
         candidate: ev.candidate ? ev.candidate.toJSON() : null,
       })
     }
+    pc.onnegotiationneeded = () => {
+      if (!entry.isOfferer || entry.ignoreNegotiation) return
+      void this.sendOffer(peerId)
+    }
     pc.onconnectionstatechange = () => {
-      if (['failed', 'closed'].includes(pc.connectionState)) {
-        this.closePeer(peerId)
+      if (pc.connectionState === 'connected') {
+        entry.offerAttempts = 0
+        this.reconnectAttempts.delete(peerId)
+        this.clearAnswerTimer(entry)
+        return
+      }
+      if (pc.connectionState === 'failed') {
+        this.closePeer(peerId, { scheduleReconnect: true })
+        return
+      }
+      if (pc.connectionState === 'closed') {
+        if (this.peers.get(peerId)?.pc === pc) {
+          this.closePeer(peerId)
+        }
       }
     }
 
+    entry.ignoreNegotiation = false
     if (createOffer) {
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      this.opts.send({ type: 'voice_offer', to: peerId, sdp: offer.sdp || '' })
+      await this.sendOffer(peerId)
     }
 
+    await this.flushIce(peerId)
     return pc
   }
 }
